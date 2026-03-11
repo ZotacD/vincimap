@@ -15,7 +15,7 @@ Créer un environnement virtuel Python 3.10 :
 
 ```bash
 py -3.10 -m venv venv
-````
+```
 
 Activer l’environnement virtuel :
 
