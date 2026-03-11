@@ -8,7 +8,7 @@
 # Les étapes suivantes doivent être respectées (en suivant le google doc "Colmap") :
 #
 # - Vérifier si cuda installé + version demandée
-# - Intégrer colmap dans la codebase ou vérifier si cuda installé + version demandée ?
+# - Intégrer colmap dans la codebase ou vérifier si colmap installé + version demandée ?
 # 
 # - Détecter frame_rate de la vidéo
 # 
