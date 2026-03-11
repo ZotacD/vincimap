@@ -22,3 +22,8 @@
 # - Lancer simple_trainer avec les options adéquats (des options peuvent être spécifiées par l'utilisateur)
 #                                   
 # Une fois cela fais, voir pour l'intégration des données Lidar
+#
+# Idée : L'utilisateur choisis des faces (ou itération sur toutes les faces d'un axe), 
+# un modèle compare la face avec la vrai photo, récupère l'ID de la photo et récupère les points Lidar associés
+# 
+# Ensuite, correction des gaussiennes affichées sur le même plan avec les points Lidar associés 
