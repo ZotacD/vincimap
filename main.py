@@ -9,7 +9,8 @@
 #
 # - Vérifier si cuda installé + version demandée
 # - Intégrer colmap dans la codebase ou vérifier si colmap installé + version demandée ?
-# 
+# - Vérifier ffmpeg installé 
+#
 # - Détecter frame_rate de la vidéo
 # 
 # - Transformer la vidéo en images via Min(frame_rate, 12fps)
