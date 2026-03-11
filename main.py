@@ -1,10 +1,5 @@
 # TODO: Script complet qui prend une vidéo et qui la transforme en modèle 3D ply.
 #
-# ATTENTION : Fork de pycolmap nécessaire pour que simple_trainer.py fonctionne, 
-# modifier "pycolmap @ git+https://github.com/rmbrualla/pycolmap@cc7ea4b7301720ac29287dbe450952511b32125e" dasn requirements.txt
-# -> Modifier scene_manager.py, _load_images_txt et _load_points3D_txt 
-#   map(...) -> list(map(...))
-#
 # Les étapes suivantes doivent être respectées (en suivant le google doc "Colmap") :
 #
 # - Vérifier si cuda installé + version demandée
@@ -27,4 +22,3 @@
 # - Lancer simple_trainer avec les options adéquats (des options peuvent être spécifiées par l'utilisateur)
 #                                   
 # Une fois cela fais, voir pour l'intégration des données Lidar
-

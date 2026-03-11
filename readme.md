@@ -17,13 +17,41 @@ Créer un environnement virtuel Python 3.10 :
 py -3.10 -m venv venv
 ```
 
-Activer l’environnement virtuel :
+### Activer l’environnement virtuel :
 
 ```bash
 venv/scripts/activate
 ```
 
-Lancer l’application :
+### Installer les dépendances :
+
+*Attention, l'éxécution doit se faire __dans l'odre__, supprimer le dossier venv si vous rencontrez une erreur et recommencer lé début de l'installation*
+
+PyTorch doit être préinstallé pour installer les dépendances complémentaires :
+
+```bash
+pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+```
+
+Dépendances complémentaires :
+
+```bash
+pip install ninja numpy jaxtyping rich
+```
+
+```bash
+pip install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
+```
+
+```bash
+python -m pip install --upgrade pip setuptools wheel
+```
+
+```bash
+python -m pip install --no-build-isolation -r requirements.txt
+```
+
+### Lancer l’application :
 
 ```bash
 py main.py
