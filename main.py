@@ -11,11 +11,11 @@
 # 
 # - Détecter frame_rate de la vidéo
 # 
-# - Transformer la vidéo en images en splitant via Min(frame_rate, 12fps) + Vérifier que ce min est % 4 -> frame_rate_splitted
-# - stocker dans le dossier "images"
-# 
-# - Transformer la vidéo en images en splitant via (frame_rate_splitted / 4) 
-# - stocker dans le dossier "images_4"
+# - Transformer la vidéo en images via Min(frame_rate, 12fps)
+# - Stocker dans le dossier "images"
+#
+# - Redimensionner les images de "images" par un facteur 4
+# - Stocker dans le dossier "images_4" (utile pour le training du modèle splatté avec --data_factor 4)
 #
 # - Appeler colmap et éxécuter automatic_reconstruction via option sparse
 #
