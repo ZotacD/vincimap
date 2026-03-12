@@ -6,3 +6,6 @@ results/**
 
 data/**
 !data/.gitkeep
+
+workspaces/**
+*.mp4

@@ -12,14 +12,13 @@ from pycolmap import SceneManager
 from tqdm import tqdm
 from typing_extensions import assert_never
 
-from exif import compute_exposure_from_exif
+from ..exif import compute_exposure_from_exif
 from .normalize import (
     align_principal_axes,
     similarity_from_cameras,
     transform_cameras,
     transform_points,
 )
-
 
 def _get_rel_paths(path_dir: str) -> List[str]:
     """Recursively get relative paths of files in a directory."""
@@ -28,32 +27,6 @@ def _get_rel_paths(path_dir: str) -> List[str]:
         for f in fn:
             paths.append(os.path.relpath(os.path.join(dp, f), path_dir))
     return paths
-
-
-def _resize_image_folder(image_dir: str, resized_dir: str, factor: int) -> str:
-    """Resize image folder."""
-    print(f"Downscaling images by {factor}x from {image_dir} to {resized_dir}.")
-    os.makedirs(resized_dir, exist_ok=True)
-
-    image_files = _get_rel_paths(image_dir)
-    for image_file in tqdm(image_files):
-        image_path = os.path.join(image_dir, image_file)
-        resized_path = os.path.join(
-            resized_dir, os.path.splitext(image_file)[0] + ".png"
-        )
-        if os.path.isfile(resized_path):
-            continue
-        image = imageio.imread(image_path)[..., :3]
-        resized_size = (
-            int(round(image.shape[1] / factor)),
-            int(round(image.shape[0] / factor)),
-        )
-        resized_image = np.array(
-            Image.fromarray(image).resize(resized_size, Image.BICUBIC)
-        )
-        imageio.imwrite(resized_path, resized_image)
-    return resized_dir
-
 
 class Parser:
     """COLMAP parser."""
@@ -65,12 +38,16 @@ class Parser:
         normalize: bool = False,
         test_every: int = 8,
         load_exposure: bool = False,
+        flip_points: bool = True
     ):
         self.data_dir = data_dir
         self.factor = factor
         self.normalize = normalize
         self.test_every = test_every
         self.load_exposure = load_exposure
+        self.flip_points = flip_points
+
+        print(data_dir)
 
         colmap_dir = os.path.join(data_dir, "sparse/0/")
         if not os.path.exists(colmap_dir):
@@ -194,11 +171,6 @@ class Parser:
         # so we need to map between the two sorted lists of files.
         colmap_files = sorted(_get_rel_paths(colmap_image_dir))
         image_files = sorted(_get_rel_paths(image_dir))
-        if factor > 1 and os.path.splitext(image_files[0])[1].lower() == ".jpg":
-            image_dir = _resize_image_folder(
-                colmap_image_dir, image_dir + "_png", factor=factor
-            )
-            image_files = sorted(_get_rel_paths(image_dir))
         colmap_to_image = dict(zip(colmap_files, image_files))
         image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
 
@@ -260,8 +232,9 @@ class Parser:
         self.camtoworlds = camtoworlds  # np.ndarray, (num_images, 4, 4)
 
         # FLIP
-        self.camtoworlds[:, :3, :3] = R_flip @ self.camtoworlds[:, :3, :3]
-        self.camtoworlds[:, :3, 3] = (R_flip @ self.camtoworlds[:, :3, 3].T).T
+        if(self.flip_points):
+            self.camtoworlds[:, :3, :3] = R_flip @ self.camtoworlds[:, :3, :3]
+            self.camtoworlds[:, :3, 3] = (R_flip @ self.camtoworlds[:, :3, 3].T).T
 
         self.camera_ids = camera_ids  # List[int], (num_images,)
         self.Ks_dict = Ks_dict  # Dict of camera_id -> K
@@ -271,7 +244,8 @@ class Parser:
         self.points = points
 
         # FLIP
-        self.points = (R_flip @ self.points.T).T  # np.ndarray, (num_points, 3)
+        if(self.flip_points):
+            self.points = (R_flip @ self.points.T).T  # np.ndarray, (num_points, 3)
         
         self.points_err = points_err  # np.ndarray, (num_points,)
         self.points_rgb = points_rgb  # np.ndarray, (num_points, 3)
