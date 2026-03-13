@@ -51,10 +51,12 @@ def automatic_reconstructor(workspace_path: str, images_path: str, colmap_path: 
             check=True,
             text=True,
         )
-    except Exception as e:
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
         print(
-            f"COLMAP error during automatic reconstruction : {e}"
+            "COLMAP error during automatic reconstruction :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
         )
+        raise
 
 
 """
@@ -88,10 +90,12 @@ def model_converter(input_path: str, output_path: str, output_type: str, colmap_
             check=True,
             text=True,
         )
-    except subprocess.CalledProcessError as e:
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
         print(
-            f"COLMAP error during model conversion :\n{e.stderr}"
+            "COLMAP error during model conversion :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
         )
+        raise
     
 """
 Fusionne les modèles accessibles via ``input_path1``
@@ -128,7 +132,9 @@ def model_merger(input_path1: str, input_path2: str, output_path: str, colmap_pa
             check=True,
             text=True,
         )
-    except subprocess.CalledProcessError as e:
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
         print(
-            f"COLMAP error during model merge :\n{e.stderr}"
+            "COLMAP error during model merge :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
         )
+        raise

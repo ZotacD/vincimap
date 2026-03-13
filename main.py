@@ -14,7 +14,7 @@
 # - Redimensionner les images de "images" par un facteur 4
 # - Stocker dans le dossier "images_4" (utile pour le training du modèle splatté avec --data_factor 4)
 #
-# - Appeler colmap et éxécuter automatic_reconstruction via option sparse
+# - Appeler colmap et éxécuter automatic_reconstruction via option sparse (ATTENTION, résultat non déterministe. On peut fixer un seed si on veut un résultat déterministe)
 #
 # - Appeler colmap et éxécuter model_converter pour convertir sparse sous format txt (utile pour le training du modèle splatté)
 # - Appeler colmap et éxécuter model_converter pour convertir sparse sous format ply (visualisation nuage de points)
@@ -41,8 +41,8 @@ STEP_ORDER = [
     "extract_video_images",
     "reconstruct_sparse_model",
     "merge_sparse_submodels",
-    "create_scatter_plot_ply",
     "create_sparse_txt_model",
+    "create_scatter_plot_ply",
     "run_gaussian_training",
 ]
 
@@ -165,11 +165,11 @@ def merge_sparse_submodels(
     merged_model_path = submodels[0]
 
     for submodel_path in submodels[1:]:
-        output_path = merged_model_path
+        print(f'Merging sparse {submodel_path.name} with sparse {merged_model_path.name}')
         colmap_utils.model_merger(
             str(merged_model_path),
             str(submodel_path),
-            str(output_path),
+            str(merged_model_path),
             colmap_path=colmap_path,
         )
         shutil.rmtree(submodel_path)
@@ -178,10 +178,11 @@ def merge_sparse_submodels(
 
 def create_scatter_plot_ply(
     sparse_path: Path,
+    sparse_0_path: Path,
     colmap_path: str,
 ) -> None:
     colmap_utils.model_converter(
-        sparse_path,
+        sparse_0_path,
         Path(sparse_path) / "scatter_plot.ply",
         "PLY",
         colmap_path=colmap_path,
@@ -244,6 +245,7 @@ def run_pipeline_from_step(step: str,
     steps_to_run = STEP_ORDER[start_index:]
 
     merged_model_path = None
+    sparse_0_path = None
 
     for current_step in steps_to_run:
         if current_step == "extract_video_images":
@@ -268,12 +270,6 @@ def run_pipeline_from_step(step: str,
                 colmap_path=colmap_path,
             )
 
-        elif current_step == "create_scatter_plot_ply":
-            create_scatter_plot_ply(
-                sparse_path=sparse_path,
-                colmap_path=colmap_path,
-            )
-
         elif current_step == "create_sparse_txt_model":
             if merged_model_path is None:
                 if (sparse_path / "0_bin").exists():
@@ -285,9 +281,16 @@ def run_pipeline_from_step(step: str,
                         f"No merged model found in : {sparse_path}"
                     )
 
-            create_sparse_txt_model(
+            sparse_0_path = create_sparse_txt_model(
                 sparse_path=sparse_path,
                 merged_model_path=merged_model_path,
+                colmap_path=colmap_path,
+            )
+
+        elif current_step == "create_scatter_plot_ply":
+            create_scatter_plot_ply(
+                sparse_path=sparse_path,
+                sparse_0_path=sparse_0_path,
                 colmap_path=colmap_path,
             )
 

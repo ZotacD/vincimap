@@ -47,6 +47,7 @@ def video_to_images(video_path: str, images_path: str, image_name: str, fps: int
     except ffmpeg.Error as e:
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
         print(f"FFmpeg error during image extraction :\n{stderr}")
+        raise
 
 """
 Transforme les images accessibles via ``images_path``
@@ -84,10 +85,12 @@ def images_to_scaled_images(images_path: str, scaled_images_path: str) -> None:
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
             )
-        except Exception as e:
+        except ffmpeg.Error as e:
+            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
             print(
-                f"FFmpeg error during resizing {input_image.name} : {e}"
+                f"FFmpeg error during resizing {input_image.name} :\n{stderr}"
             )
+            raise
         
 """
 Retourne le frame rate de la vidéo
@@ -101,8 +104,9 @@ def frame_rate_from_video(video_path: str) -> float:
 
     try:
         probe = ffmpeg.probe(str(input_video))
-    except Exception as e:
+    except ffmpeg.Error as e:
         print(f"FFmpeg error during video probing : {e}")
+        raise
 
     video_stream = next(
         (stream for stream in probe["streams"] if stream.get("codec_type") == "video"),
@@ -122,5 +126,7 @@ def frame_rate_from_video(video_path: str) -> float:
         return float(numerator) / float(denominator)
     except (ValueError, ZeroDivisionError) as e:
         print(
-            f"Invalid frame rate returned by FFmpeg for video : {input_video}"
+            "Invalid frame rate returned by FFmpeg for video : "
+            f"{input_video} ({e})"
         )
+        raise
