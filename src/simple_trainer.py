@@ -16,8 +16,8 @@ import tyro
 import viser
 import yaml
 # from gsplat.color_correct import color_correct_affine, color_correct_quadratic
-from datasets.colmap import Dataset, Parser
-from datasets.traj import (
+from .datasets.colmap import Dataset, Parser
+from .datasets.traj import (
     generate_ellipse_path_z,
     generate_interpolated_path,
     generate_spiral_path,
@@ -29,7 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal, assert_never
-from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
+from .utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
 
 from gsplat import export_splats
 from gsplat.compression import PngCompression
@@ -37,7 +37,7 @@ from gsplat.distributed import cli
 from gsplat.optimizers import SelectiveAdam
 from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
-from gsplat_viewer import GsplatViewer, GsplatRenderTabState
+from .gsplat_viewer import GsplatViewer, GsplatRenderTabState
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 
 
@@ -1338,6 +1338,65 @@ class Runner:
             )
         return renders
 
+def build_configs() -> Dict[str, Tuple[str, Config]]:
+    return {
+        "default": (
+            "Gaussian splatting training using densification heuristics from the original paper.",
+            Config(
+                strategy=DefaultStrategy(verbose=True),
+            ),
+        ),
+        "mcmc": (
+            "Gaussian splatting training using densification from the paper '3D Gaussian Splatting as Markov Chain Monte Carlo'.",
+            Config(
+                init_opa=0.5,
+                init_scale=0.1,
+                opacity_reg=0.01,
+                scale_reg=0.01,
+                strategy=MCMCStrategy(verbose=True),
+            ),
+        ),
+    }
+
+
+def prepare_cfg_from_argv(argv: List[str]) -> Config:
+    configs = build_configs()
+    cfg = tyro.extras.overridable_config_cli(configs, args=argv)
+    cfg.adjust_steps(cfg.steps_scaler)
+
+    # try import extra dependencies
+    if cfg.compression == "png":
+        try:
+            import plas
+            import torchpq
+        except Exception as e:
+            raise ImportError(
+                "To use PNG compression, you need to install "
+                "torchpq (instruction at https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) "
+                "and plas (via 'pip install git+https://github.com/fraunhoferhhi/PLAS.git') "
+            ) from e
+
+    if cfg.with_ut:
+        assert cfg.with_eval3d, "Training with UT requires setting `with_eval3d` flag."
+
+    return cfg
+
+
+def run_cli_args(argv: List[str]) -> None:
+    """
+    Usage:
+
+    ```bash
+    # Single GPU training
+    CUDA_VISIBLE_DEVICES=9 python -m examples.simple_trainer default
+
+    # Distributed training on 4 GPUs: Effectively 4x batch size so run 4x less steps.
+    CUDA_VISIBLE_DEVICES=0,1,2,3 python simple_trainer.py default --steps_scaler 0.25
+
+    """
+
+    cfg = prepare_cfg_from_argv(argv)
+    cli(main, cfg, verbose=True)
 
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     # Import post-processing modules based on configuration
@@ -1394,56 +1453,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
         print("Viewer running... Ctrl+C to exit.")
         time.sleep(1000000)
 
-
 if __name__ == "__main__":
-    """
-    Usage:
+    import sys
 
-    ```bash
-    # Single GPU training
-    CUDA_VISIBLE_DEVICES=9 python -m examples.simple_trainer default
-
-    # Distributed training on 4 GPUs: Effectively 4x batch size so run 4x less steps.
-    CUDA_VISIBLE_DEVICES=0,1,2,3 python simple_trainer.py default --steps_scaler 0.25
-
-    """
-
-    # Config objects we can choose between.
-    # Each is a tuple of (CLI description, config object).
-    configs = {
-        "default": (
-            "Gaussian splatting training using densification heuristics from the original paper.",
-            Config(
-                strategy=DefaultStrategy(verbose=True),
-            ),
-        ),
-        "mcmc": (
-            "Gaussian splatting training using densification from the paper '3D Gaussian Splatting as Markov Chain Monte Carlo'.",
-            Config(
-                init_opa=0.5,
-                init_scale=0.1,
-                opacity_reg=0.01,
-                scale_reg=0.01,
-                strategy=MCMCStrategy(verbose=True),
-            ),
-        ),
-    }
-    cfg = tyro.extras.overridable_config_cli(configs)
-    cfg.adjust_steps(cfg.steps_scaler)
-
-    # try import extra dependencies
-    if cfg.compression == "png":
-        try:
-            import plas
-            import torchpq
-        except:
-            raise ImportError(
-                "To use PNG compression, you need to install "
-                "torchpq (instruction at https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) "
-                "and plas (via 'pip install git+https://github.com/fraunhoferhhi/PLAS.git') "
-            )
-
-    if cfg.with_ut:
-        assert cfg.with_eval3d, "Training with UT requires setting `with_eval3d` flag."
-
-    cli(main, cfg, verbose=True)
+    run_cli_args(sys.argv[1:])
