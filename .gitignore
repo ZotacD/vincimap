@@ -1,11 +1,7 @@
 venv/
 **/__pycache__/
 
-results/**
-!results/.gitkeep
-
-data/**
-!data/.gitkeep
+res/**
+!res/.gitkeep
 
 workspaces/**
-*.mp4

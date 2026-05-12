@@ -65,6 +65,13 @@ def load_args() -> argparse.Namespace:
         help="Frame rate used to extract images from the input video.",
     )
     parser.add_argument(
+        "--distances_path",
+        type=str,
+        required=False,
+        default=None,
+        help="Path to the input distances TXT file.",
+    )
+    parser.add_argument(
         "--trainer-data_factor",
         type=int,
         required=False,
