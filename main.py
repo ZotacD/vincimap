@@ -29,6 +29,7 @@
 # Ensuite, correction des gaussiennes affichées sur le même plan avec les points Lidar associés 
 
 import argparse
+import csv
 import src.ffmpeg_utils as ffmpeg_utils
 import src.colmap_utils as colmap_utils
 import torch
@@ -39,6 +40,7 @@ import src.simple_trainer as simple_trainer
 
 STEP_ORDER = [
     "extract_video_images",
+    "link_image_with_distances",
     "reconstruct_sparse_model",
     "merge_sparse_submodels",
     "create_sparse_txt_model",
@@ -67,8 +69,7 @@ def load_args() -> argparse.Namespace:
     parser.add_argument(
         "--distances_path",
         type=str,
-        required=False,
-        default=None,
+        required=True,
         help="Path to the input distances TXT file.",
     )
     parser.add_argument(
@@ -143,6 +144,97 @@ def extract_video_images(
         ffmpeg_utils.images_to_scaled_images(images_path, scaled_images_path)
 
     return scaled_images_path
+
+def link_image_with_distances(
+    distances_path: str,
+    data_path: Path,
+    images_path: Path,
+    video_duration: float | None,
+    video_frame_rate: int,
+) -> Path:
+    input_distances_path = Path(distances_path)
+    output_distances_path = Path(data_path) / "distances.txt"
+
+    if not input_distances_path.is_file():
+        raise FileNotFoundError(f"Distances file not found : {input_distances_path}")
+
+    image_names = sorted(
+        path.name for path in images_path.iterdir()
+    )
+
+    if not image_names:
+        raise FileNotFoundError(f"No images found in : {images_path}")
+
+    with input_distances_path.open("r", encoding="utf-8-sig", newline="") as input_file:
+        sample = input_file.read(4096)
+        input_file.seek(0)
+
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters="\t;,")
+        except csv.Error:
+            dialect = csv.excel_tab
+
+        rows = [
+            row for row in csv.reader(input_file, dialect)
+            if any(cell.strip() for cell in row)
+        ]
+
+    if not rows:
+        raise ValueError(f"Distances file is empty : {input_distances_path}")
+
+    header = rows[0]
+    distance_rows = rows[1:]
+
+    if not distance_rows:
+        raise ValueError(f"Distances file has no data rows : {input_distances_path}")
+
+    existing_image_id_index = next(
+        (
+            index for index, column_name in enumerate(header)
+            if column_name.strip().lower() == "image_id"
+        ),
+        None,
+    )
+
+    if existing_image_id_index is not None:
+        header = [
+            column_name for index, column_name in enumerate(header)
+            if index != existing_image_id_index
+        ]
+        distance_rows = [
+            [
+                value for index, value in enumerate(row)
+                if index != existing_image_id_index
+            ]
+            for row in distance_rows
+        ]
+
+    if video_duration is not None:
+        expected_image_count = max(1, math.ceil(video_duration * video_frame_rate))
+    else:
+        expected_image_count = len(image_names)
+
+    image_count = min(expected_image_count, len(image_names))
+    distances_per_image = len(distance_rows) / image_count
+
+    output_distances_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_distances_path.open("w", encoding="utf-8", newline="") as output_file:
+        writer = csv.writer(
+            output_file,
+            delimiter=dialect.delimiter,
+            lineterminator="\n",
+        )
+        writer.writerow(header + ["image_id"])
+
+        for row_index, row in enumerate(distance_rows):
+            image_index = min(
+                int(row_index / distances_per_image),
+                image_count - 1,
+            )
+            writer.writerow(row + [image_names[image_index]])
+
+    return output_distances_path
 
 def reconstruct_sparse_model(
     data_path: Path,
@@ -244,6 +336,8 @@ def run_pipeline_from_step(step: str,
     sparse_path: Path,
     video_path: str,
     video_name: str,
+    distances_path: str,
+    video_duration: float | None,
     video_frame_rate: int,
     trainer_data_factor: int,
     trainer_args: list[str],
@@ -262,6 +356,15 @@ def run_pipeline_from_step(step: str,
                 video_name=video_name,
                 video_frame_rate=video_frame_rate,
                 trainer_data_factor=trainer_data_factor,
+            )
+
+        elif current_step == "link_image_with_distances":
+            link_image_with_distances(
+                distances_path=distances_path,
+                data_path=data_path,
+                images_path=images_path,
+                video_duration=video_duration,
+                video_frame_rate=video_frame_rate,
             )
 
         elif current_step == "reconstruct_sparse_model":
@@ -345,11 +448,14 @@ def main(args, unknown_args):
 
     sparse_path = data_path / "sparse"
 
+    video_duration = None
+
     if video_path is not None:
         video_frame_rate = min(
             math.ceil(ffmpeg_utils.frame_rate_from_video(video_path)),
             args.video_frame_rate,
         )
+        video_duration = ffmpeg_utils.duration_from_video(video_path)
     else:
         video_frame_rate = args.video_frame_rate
 
@@ -366,6 +472,8 @@ def main(args, unknown_args):
         sparse_path=sparse_path,
         video_path=video_path,
         video_name=video_name,
+        distances_path=args.distances_path,
+        video_duration=video_duration,
         video_frame_rate=video_frame_rate,
         trainer_data_factor=trainer_data_factor,
         trainer_args=trainer_args,

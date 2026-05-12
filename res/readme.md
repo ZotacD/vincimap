@@ -1,0 +1,1 @@
+# Placer dans le dossier "res" la vidéo et le fichier .txt distannces associé

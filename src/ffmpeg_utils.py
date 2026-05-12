@@ -130,3 +130,44 @@ def frame_rate_from_video(video_path: str) -> float:
             f"{input_video} ({e})"
         )
         raise
+
+"""
+Retourne la durée de la vidéo en secondes.
+"""
+def duration_from_video(video_path: str) -> float:
+    input_video = Path(video_path)
+
+    if not input_video.is_file():
+        raise FileNotFoundError(f"Video not found : {input_video}")
+
+    try:
+        probe = ffmpeg.probe(str(input_video))
+    except ffmpeg.Error as e:
+        print(f"FFmpeg error during video probing : {e}")
+        raise
+
+    duration = probe.get("format", {}).get("duration")
+
+    if duration is None:
+        video_stream = next(
+            (
+                stream for stream in probe.get("streams", [])
+                if stream.get("codec_type") == "video"
+            ),
+            None,
+        )
+
+        if video_stream is not None:
+            duration = video_stream.get("duration")
+
+    if duration is None:
+        raise ValueError(f"Duration not found for video : {input_video}")
+
+    try:
+        return float(duration)
+    except ValueError as e:
+        print(
+            "Invalid duration returned by FFmpeg for video : "
+            f"{input_video} ({e})"
+        )
+        raise

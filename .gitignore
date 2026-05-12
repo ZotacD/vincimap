@@ -3,5 +3,6 @@ venv/
 
 res/**
 !res/.gitkeep
+!res/readme.md
 
 workspaces/**
