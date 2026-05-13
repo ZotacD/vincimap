@@ -8,13 +8,14 @@ Avant de lancer le projet, installer les dépendances suivantes :
 - [CUDA 12.4.0](https://developer.nvidia.com/cuda-12-4-0-download-archive)
 - [COLMAP 3.13.0 (version CUDA)](https://github.com/colmap/colmap/releases/tag/3.13.0)
 - [FFmpeg](https://ffmpeg.org/download.html)
+- Dernière version de C++. Voir ["Microsoft C++ Build Tools"](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 ## Installation
 
 Créer un environnement virtuel Python 3.10 :
 
 ```bash
-py -3.10 -m venv venv
+python -3.10 -m venv venv
 ```
 
 ### Activer l’environnement virtuel :
@@ -30,17 +31,17 @@ venv/scripts/activate
 PyTorch doit être préinstallé pour installer les dépendances complémentaires :
 
 ```bash
-pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+python -m pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
 ```
 
 Dépendances complémentaires :
 
 ```bash
-pip install ninja numpy jaxtyping rich
+python -m install ninja numpy jaxtyping rich
 ```
 
 ```bash
-pip install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
+python -m install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
 ```
 
 ```bash
@@ -54,5 +55,5 @@ python -m pip install --no-build-isolation -r requirements.txt
 ### Lancer l’application :
 
 ```bash
-py main.py
+python main.py
 ```
