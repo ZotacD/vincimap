@@ -81,6 +81,93 @@ def database_creator(database_path: str, colmap_path: str = "colmap") -> None:
 
 
 """
+Extrait les features des images
+via le projet accessible via ``project_path``.
+"""
+def feature_extractor(project_path: str, colmap_path: str = "colmap") -> None:
+    project_file = Path(project_path)
+
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Project file not found : {project_file}")
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "feature_extractor",
+                "--project_path",
+                str(project_file),
+            ],
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during feature extraction :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
+Matche les images de manière séquentielle
+via le projet accessible via ``project_path``.
+"""
+def sequential_matcher(project_path: str, colmap_path: str = "colmap") -> None:
+    project_file = Path(project_path)
+
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Project file not found : {project_file}")
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "sequential_matcher",
+                "--project_path",
+                str(project_file),
+            ],
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during sequential matching :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
+Reconstruit le modèle sparse
+via le projet accessible via ``project_path``.
+"""
+def mapper(project_path: str, colmap_path: str = "colmap") -> None:
+    project_file = Path(project_path)
+
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Project file not found : {project_file}")
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "mapper",
+                "--project_path",
+                str(project_file),
+            ],
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during sparse reconstruction :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
 Reconstruit automatiquement une scène 3D
 dans l'espace de travail accessible via ``workspace_path``
 à partir des images accessibles via ``images_path``.
@@ -167,7 +254,8 @@ def model_converter(input_path: str, output_path: str, output_type: str, colmap_
             f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
         )
         raise
-    
+
+
 """
 Fusionne les modèles accessibles via ``input_path1``
 et ``input_path2``

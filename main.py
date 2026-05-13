@@ -37,12 +37,10 @@ from pathlib import Path
 import math
 import shutil
 import src.simple_trainer as simple_trainer
-from configobj import ConfigObj
 
 STEP_ORDER = [
     "extract_video_images",
     "link_image_with_distances",
-    "generate_colmap_project",
     "reconstruct_sparse_model",
     "merge_sparse_submodels",
     "create_sparse_txt_model",
@@ -114,7 +112,7 @@ def load_args() -> argparse.Namespace:
     args, unknown_args = parser.parse_known_args()
     return args, unknown_args
 
-def build_prefixed_args(unknown_args: list[str], prefix: str, build_sub_args = True) -> list[str]:
+def build_prefixed_args(unknown_args: list[str], prefix: str) -> list[str]:
     prefixed_args = []
     index = 0
 
@@ -122,7 +120,7 @@ def build_prefixed_args(unknown_args: list[str], prefix: str, build_sub_args = T
         arg = unknown_args[index]
 
         if arg.startswith(prefix):
-            prefixed_args.append("--" if build_sub_args else "" + arg[len(prefix):])
+            prefixed_args.append("--" + arg[len(prefix):])
 
             if index + 1 < len(unknown_args) and not unknown_args[index + 1].startswith("--"):
                 prefixed_args.append(unknown_args[index + 1])
@@ -143,9 +141,6 @@ def build_trainer_args(unknown_args: list[str]) -> list[str]:
         trainer_args.insert(0, "default")
 
     return trainer_args
-
-def build_colmap_args(unknown_args: list[str]) -> list[str]:
-    return build_prefixed_args(unknown_args, "--colmap-", False)
 
 def angle_in_video_fov(angle_deg: float, video_fov: float) -> bool:
     if video_fov >= 360.0:
@@ -294,69 +289,93 @@ def link_image_with_distances(
 
     return output_distances_path
 
-def generate_colmap_project(
-    data_path: Path,
-    colmap_path: str,
-    colmap_args: list[str],
-    images_path: str
-) -> Path:
-    filename = "project.ini"
-
-    colmap_utils.project_generator(
-        data_path,
-        filename=filename,
-        colmap_path=colmap_path,
-    )
-
-    project_path = Path(data_path) / filename
-    database_path = Path(data_path) / "database.db"
-
-    colmap_utils.database_creator(database_path, colmap_path=colmap_path)
-
-    config = ConfigObj(str(project_path), encoding="utf-8")
-
-    if len(colmap_args) % 2 != 0:
-        raise ValueError(
-            "COLMAP arguments must be passed as option/value pairs, "
-            "for example: --colmap-Mapper.tri_min_angle 5.0"
-        )
-
-    for option_name, option_value in zip(colmap_args[::2], colmap_args[1::2]):
-        section_name, separator, key_name = option_name.partition(".")
-
-        if not key_name:
-            raise ValueError(
-                "COLMAP arguments must use Section.option or option names, "
-                f"got: {option_name}"
-            )
-
-        # Modifie ou ajoute l'option
-        config[section_name][key_name] = str(option_value)
-
-    # Custom
-    config["database_path"] = str(database_path)
-    config["image_path"] = str(images_path)
-
-    config.write()
-
-    return project_path
-
 def reconstruct_sparse_model(
     data_path: Path,
     images_path: Path,
     colmap_path: str,
-    project_path: str,
 ) -> Path:
-    project_path = Path(project_path)
+    database_path = Path(data_path) / "database.db"
 
-    colmap_utils.automatic_reconstructor(
+    sparse_path = Path(data_path) / "sparse"
+    sparse_path.mkdir(exist_ok=True)
+
+    configs_path = create_colmap_workspace_configs(
         data_path,
+        database_path,
         images_path,
-        project_path,
+        sparse_path,
+    )
+    feature_extractor_config_path = configs_path / "feature_extractor.ini"
+    sequential_matcher_config_path = configs_path / "sequential_matcher.ini"
+    mapper_config_path = configs_path / "mapper.ini"
+
+    if not database_path.exists():
+        colmap_utils.database_creator(database_path, colmap_path=colmap_path)
+
+    colmap_utils.feature_extractor(
+        feature_extractor_config_path,
         colmap_path=colmap_path,
     )
 
-    return Path(data_path) / "sparse"
+    colmap_utils.sequential_matcher(
+        sequential_matcher_config_path,
+        colmap_path=colmap_path,
+    )
+
+    colmap_utils.mapper(
+        mapper_config_path,
+        colmap_path=colmap_path,
+    )
+
+    return sparse_path
+
+def create_colmap_workspace_configs(
+    data_path: Path,
+    database_path: Path,
+    images_path: Path,
+    sparse_path: Path,
+) -> Path:
+    configs_path = Path(data_path) / "configs"
+    configs_path.mkdir(parents=True, exist_ok=True)
+
+    write_colmap_workspace_config(
+        Path("configs") / "feature_extractor.ini",
+        configs_path / "feature_extractor.ini",
+        {
+            "database_path": database_path,
+            "image_path": images_path,
+        },
+    )
+    write_colmap_workspace_config(
+        Path("configs") / "sequential_matcher.ini",
+        configs_path / "sequential_matcher.ini",
+        {
+            "database_path": database_path,
+        },
+    )
+    write_colmap_workspace_config(
+        Path("configs") / "mapper.ini",
+        configs_path / "mapper.ini",
+        {
+            "database_path": database_path,
+            "image_path": images_path,
+            "output_path": sparse_path,
+        },
+    )
+
+    return configs_path
+
+def write_colmap_workspace_config(
+    template_path: Path,
+    output_path: Path,
+    values: dict[str, Path],
+) -> None:
+    config_content = Path(template_path).read_text(encoding="utf-8")
+
+    with Path(output_path).open("w", encoding="utf-8") as output_file:
+        for key, value in values.items():
+            output_file.write(f"{key} = {value}\n")
+        output_file.write(config_content)
 
 def merge_sparse_submodels(
     sparse_path: Path,
@@ -451,14 +470,12 @@ def run_pipeline_from_step(step: str,
     video_fov: float,
     trainer_data_factor: int,
     trainer_args: list[str],
-    colmap_path: str,
-    colmap_args: list[str]) -> None:
+    colmap_path: str) -> None:
     start_index = STEP_ORDER.index(step)
     steps_to_run = STEP_ORDER[start_index:]
 
     merged_model_path = None
     sparse_0_path = None
-    project_path = Path(data_path) / "project.ini"
 
     for current_step in steps_to_run:
         if current_step == "extract_video_images":
@@ -480,20 +497,11 @@ def run_pipeline_from_step(step: str,
                 video_fov=video_fov,
             )
 
-        elif current_step == "generate_colmap_project":
-            project_path = generate_colmap_project(
-                data_path=data_path,
-                images_path=images_path,
-                colmap_path=colmap_path,
-                colmap_args=colmap_args
-            )
-
         elif current_step == "reconstruct_sparse_model":
             reconstruct_sparse_model(
                 data_path=data_path,
                 images_path=images_path,
                 colmap_path=colmap_path,
-                project_path=project_path
             )
 
         elif current_step == "merge_sparse_submodels":
@@ -541,7 +549,6 @@ def main(args, unknown_args):
         )
 
     trainer_args = build_trainer_args(unknown_args)
-    colmap_args = build_colmap_args(unknown_args)
 
     trainer_data_factor = args.trainer_data_factor
     trainer_args.extend(["--data_factor", str(trainer_data_factor)])
@@ -602,7 +609,6 @@ def main(args, unknown_args):
         trainer_data_factor=trainer_data_factor,
         trainer_args=trainer_args,
         colmap_path=colmap_path,
-        colmap_args=colmap_args
     )
 
 if __name__ == '__main__':
