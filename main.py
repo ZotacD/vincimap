@@ -37,10 +37,12 @@ from pathlib import Path
 import math
 import shutil
 import src.simple_trainer as simple_trainer
+from configobj import ConfigObj
 
 STEP_ORDER = [
     "extract_video_images",
     "link_image_with_distances",
+    "generate_colmap_project",
     "reconstruct_sparse_model",
     "merge_sparse_submodels",
     "create_sparse_txt_model",
@@ -65,6 +67,13 @@ def load_args() -> argparse.Namespace:
         required=False,
         default=12,
         help="Frame rate used to extract images from the input video.",
+    )
+    parser.add_argument(
+        "--video-fov",
+        type=float,
+        required=False,
+        default=70.0,
+        help="Video horizontal field of view in degrees. Distances outside 0 +/- FOV/2 are ignored.",
     )
     parser.add_argument(
         "--distances_path",
@@ -105,21 +114,56 @@ def load_args() -> argparse.Namespace:
     args, unknown_args = parser.parse_known_args()
     return args, unknown_args
 
-def build_trainer_args(unknown_args: list[str], ) -> list[str]:
-    trainer_args = []
+def build_prefixed_args(unknown_args: list[str], prefix: str, build_sub_args = True) -> list[str]:
+    prefixed_args = []
+    index = 0
 
-    for arg in unknown_args:
-        if arg in {"default", "mcmc"}:
-            trainer_args.append(arg)
-        elif arg.startswith("--trainer-"):
-            trainer_args.append("--" + arg[len("--trainer-"):])
-        else:
-            trainer_args.append(arg)
+    while index < len(unknown_args):
+        arg = unknown_args[index]
+
+        if arg.startswith(prefix):
+            prefixed_args.append("--" if build_sub_args else "" + arg[len(prefix):])
+
+            if index + 1 < len(unknown_args) and not unknown_args[index + 1].startswith("--"):
+                prefixed_args.append(unknown_args[index + 1])
+                index += 1
+
+        index += 1
+
+    return prefixed_args
+
+def build_trainer_args(unknown_args: list[str]) -> list[str]:
+    trainer_args = [
+        arg for arg in unknown_args
+        if arg in {"default", "mcmc"}
+    ]
+    trainer_args.extend(build_prefixed_args(unknown_args, "--trainer-"))
 
     if not trainer_args or trainer_args[0] not in {"default", "mcmc"}:
         trainer_args.insert(0, "default")
 
     return trainer_args
+
+def build_colmap_args(unknown_args: list[str]) -> list[str]:
+    return build_prefixed_args(unknown_args, "--colmap-", False)
+
+def angle_in_video_fov(angle_deg: float, video_fov: float) -> bool:
+    if video_fov >= 360.0:
+        return True
+
+    wrapped_angle = (angle_deg + 180.0) % 360.0 - 180.0
+    return abs(wrapped_angle) <= video_fov / 2.0
+
+def find_angle_column_index(header: list[str]) -> int:
+    for index, column_name in enumerate(header):
+        if column_name.strip().lower() == "angle(deg)":
+            return index
+
+    for index, column_name in enumerate(header):
+        if "angle" in column_name.strip().lower():
+            return index
+
+    raise ValueError("Distances file must contain an angle column.")
 
 # Etapes
 
@@ -151,6 +195,7 @@ def link_image_with_distances(
     images_path: Path,
     video_duration: float | None,
     video_frame_rate: int,
+    video_fov: float,
 ) -> Path:
     input_distances_path = Path(distances_path)
     output_distances_path = Path(data_path) / "distances.txt"
@@ -187,6 +232,8 @@ def link_image_with_distances(
 
     if not distance_rows:
         raise ValueError(f"Distances file has no data rows : {input_distances_path}")
+    if video_fov <= 0.0 or video_fov > 360.0:
+        raise ValueError(f"Video FOV must be in ]0, 360], got {video_fov}.")
 
     existing_image_id_index = next(
         (
@@ -208,6 +255,17 @@ def link_image_with_distances(
             ]
             for row in distance_rows
         ]
+
+    angle_index = find_angle_column_index(header)
+    distance_rows = [
+        row for row in distance_rows
+        if len(row) > angle_index and angle_in_video_fov(float(row[angle_index]), video_fov)
+    ]
+
+    if not distance_rows:
+        raise ValueError(
+            f"No distance rows remain after applying video FOV {video_fov} deg."
+        )
 
     if video_duration is not None:
         expected_image_count = max(1, math.ceil(video_duration * video_frame_rate))
@@ -236,14 +294,65 @@ def link_image_with_distances(
 
     return output_distances_path
 
+def generate_colmap_project(
+    data_path: Path,
+    colmap_path: str,
+    colmap_args: list[str],
+    images_path: str
+) -> Path:
+    filename = "project.ini"
+
+    colmap_utils.project_generator(
+        data_path,
+        filename=filename,
+        colmap_path=colmap_path,
+    )
+
+    project_path = Path(data_path) / filename
+    database_path = Path(data_path) / "database.db"
+
+    colmap_utils.database_creator(database_path, colmap_path=colmap_path)
+
+    config = ConfigObj(str(project_path), encoding="utf-8")
+
+    if len(colmap_args) % 2 != 0:
+        raise ValueError(
+            "COLMAP arguments must be passed as option/value pairs, "
+            "for example: --colmap-Mapper.tri_min_angle 5.0"
+        )
+
+    for option_name, option_value in zip(colmap_args[::2], colmap_args[1::2]):
+        section_name, separator, key_name = option_name.partition(".")
+
+        if not key_name:
+            raise ValueError(
+                "COLMAP arguments must use Section.option or option names, "
+                f"got: {option_name}"
+            )
+
+        # Modifie ou ajoute l'option
+        config[section_name][key_name] = str(option_value)
+
+    # Custom
+    config["database_path"] = str(database_path)
+    config["image_path"] = str(images_path)
+
+    config.write()
+
+    return project_path
+
 def reconstruct_sparse_model(
     data_path: Path,
     images_path: Path,
     colmap_path: str,
+    project_path: str,
 ) -> Path:
+    project_path = Path(project_path)
+
     colmap_utils.automatic_reconstructor(
         data_path,
         images_path,
+        project_path,
         colmap_path=colmap_path,
     )
 
@@ -339,14 +448,17 @@ def run_pipeline_from_step(step: str,
     distances_path: str,
     video_duration: float | None,
     video_frame_rate: int,
+    video_fov: float,
     trainer_data_factor: int,
     trainer_args: list[str],
-    colmap_path: str) -> None:
+    colmap_path: str,
+    colmap_args: list[str]) -> None:
     start_index = STEP_ORDER.index(step)
     steps_to_run = STEP_ORDER[start_index:]
 
     merged_model_path = None
     sparse_0_path = None
+    project_path = Path(data_path) / "project.ini"
 
     for current_step in steps_to_run:
         if current_step == "extract_video_images":
@@ -365,6 +477,15 @@ def run_pipeline_from_step(step: str,
                 images_path=images_path,
                 video_duration=video_duration,
                 video_frame_rate=video_frame_rate,
+                video_fov=video_fov,
+            )
+
+        elif current_step == "generate_colmap_project":
+            project_path = generate_colmap_project(
+                data_path=data_path,
+                images_path=images_path,
+                colmap_path=colmap_path,
+                colmap_args=colmap_args
             )
 
         elif current_step == "reconstruct_sparse_model":
@@ -372,6 +493,7 @@ def run_pipeline_from_step(step: str,
                 data_path=data_path,
                 images_path=images_path,
                 colmap_path=colmap_path,
+                project_path=project_path
             )
 
         elif current_step == "merge_sparse_submodels":
@@ -419,9 +541,10 @@ def main(args, unknown_args):
         )
 
     trainer_args = build_trainer_args(unknown_args)
+    colmap_args = build_colmap_args(unknown_args)
 
     trainer_data_factor = args.trainer_data_factor
-    trainer_args.extend(['--data_factor', trainer_data_factor])
+    trainer_args.extend(["--data_factor", str(trainer_data_factor)])
     colmap_path = args.colmap_path
     step = args.step
 
@@ -475,9 +598,11 @@ def main(args, unknown_args):
         distances_path=args.distances_path,
         video_duration=video_duration,
         video_frame_rate=video_frame_rate,
+        video_fov=args.video_fov,
         trainer_data_factor=trainer_data_factor,
         trainer_args=trainer_args,
         colmap_path=colmap_path,
+        colmap_args=colmap_args
     )
 
 if __name__ == '__main__':

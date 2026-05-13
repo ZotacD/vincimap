@@ -1,3 +1,4 @@
+import csv
 import json
 import math
 import os
@@ -64,6 +65,30 @@ class Config:
     patch_size: Optional[int] = None
     # A global scaler that applies to the scene size related parameters
     global_scale: float = 1.0
+    # Compute the independent lidar scale (gsplat units per meter) after PLY export.
+    compute_lidar_scale: bool = True
+    # Path to the linked lidar distances file. Defaults to <data_dir>/distances.txt.
+    lidar_distances_path: Optional[str] = None
+    # Offset applied before matching lidar angles to camera horizontal angles.
+    lidar_angle_offset_deg: float = 0.0
+    # Sign applied to lidar angles before matching. Use -1 if the lidar scan is mirrored.
+    lidar_angle_sign: int = 1
+    # Horizontal angular tolerance used to match splat centers to lidar rays.
+    lidar_angle_tolerance_deg: float = 0.5
+    # Vertical angle of the 2D lidar plane in the camera frame.
+    lidar_vertical_angle_deg: float = 0.0
+    # Vertical angular tolerance around the 2D lidar plane.
+    lidar_vertical_tolerance_deg: float = 1.0
+    # Minimum matched lidar rays required to keep an image in the global scale.
+    lidar_min_matches_per_image: int = 3
+    # Lidar center offset from the camera center, expressed in camera coordinates and meters.
+    lidar_offset_x_m: float = 0.0
+    lidar_offset_y_m: float = 0.0
+    lidar_offset_z_m: float = 0.0
+    # Number of fixed-point iterations used to convert the metric offset into gsplat units.
+    lidar_scale_iterations: int = 4
+    # Stop iterating when the global scale changes less than this amount.
+    lidar_scale_convergence_eps: float = 1e-6
     # Normalize the world space
     normalize_world_space: bool = True
     # Camera model
@@ -315,6 +340,70 @@ def create_splats_with_optimizers(
         for name, _, lr in params
     }
     return splats, optimizers
+
+
+def _first_matching_column(fieldnames: List[str], candidates: List[str]) -> str:
+    normalized = {name.strip().lower(): name for name in fieldnames}
+    for candidate in candidates:
+        if candidate in normalized:
+            return normalized[candidate]
+    for name in fieldnames:
+        lowered = name.strip().lower()
+        if any(candidate in lowered for candidate in candidates):
+            return name
+    raise ValueError(f"Missing one of columns {candidates} in lidar distances file.")
+
+
+def _load_lidar_distances(
+    distances_path: str,
+) -> Dict[str, List[Tuple[float, float]]]:
+    with open(distances_path, "r", encoding="utf-8-sig", newline="") as f:
+        sample = f.read(4096)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters="\t;,")
+        except csv.Error:
+            dialect = csv.excel_tab
+
+        reader = csv.DictReader(f, dialect=dialect)
+        if reader.fieldnames is None:
+            raise ValueError(f"Lidar distances file has no header: {distances_path}")
+
+        angle_key = _first_matching_column(reader.fieldnames, ["angle", "angle(deg)"])
+        distance_key = _first_matching_column(
+            reader.fieldnames, ["distance", "distance(mm)"]
+        )
+        image_key = _first_matching_column(reader.fieldnames, ["image_id", "image"])
+        distance_in_mm = "mm" in distance_key.lower()
+
+        grouped: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
+        for row in reader:
+            image_name = row[image_key].strip()
+            if not image_name:
+                continue
+            angle_deg = float(row[angle_key])
+            distance = float(row[distance_key])
+            distance_m = distance / 1000.0 if distance_in_mm else distance
+            if distance_m > 0.0 and math.isfinite(distance_m):
+                grouped[image_name].append((angle_deg, distance_m))
+
+    return grouped
+
+
+def _aggregate_lidar_samples(
+    samples: List[Tuple[float, float]]
+) -> Tuple[np.ndarray, np.ndarray]:
+    by_angle: Dict[float, List[float]] = defaultdict(list)
+    for angle_deg, distance_m in samples:
+        by_angle[round(angle_deg, 4)].append(distance_m)
+
+    angles = []
+    distances = []
+    for angle_deg in sorted(by_angle):
+        angles.append(angle_deg)
+        distances.append(float(np.median(by_angle[angle_deg])))
+
+    return np.asarray(angles, dtype=np.float32), np.asarray(distances, dtype=np.float32)
 
 
 class Runner:
@@ -660,6 +749,240 @@ class Runner:
 
         return render_colors, render_alphas, info
 
+    @torch.no_grad()
+    def compute_lidar_scale(self, step: int) -> Optional[Dict]:
+        """Compute an independent gsplat-units-per-meter scale from 2D lidar rays."""
+        cfg = self.cfg
+        if not cfg.compute_lidar_scale or self.world_rank != 0:
+            return None
+
+        distances_path = cfg.lidar_distances_path or os.path.join(
+            cfg.data_dir, "distances.txt"
+        )
+        if not os.path.exists(distances_path):
+            print(f"[Lidar scale] Distances file not found, skipping: {distances_path}")
+            return None
+
+        if cfg.lidar_angle_tolerance_deg <= 0.0:
+            raise ValueError("lidar_angle_tolerance_deg must be > 0.")
+        if cfg.lidar_vertical_tolerance_deg <= 0.0:
+            raise ValueError("lidar_vertical_tolerance_deg must be > 0.")
+        if cfg.lidar_scale_iterations < 1:
+            raise ValueError("lidar_scale_iterations must be >= 1.")
+
+        print(f"[Lidar scale] Computing gsplat/meter scale from {distances_path}")
+        lidar_by_image = _load_lidar_distances(distances_path)
+        means = self.splats["means"].detach()
+        ones = torch.ones((means.shape[0], 1), device=means.device, dtype=means.dtype)
+        means_h = torch.cat([means, ones], dim=-1)
+        angle_sign = -1.0 if cfg.lidar_angle_sign < 0 else 1.0
+        lidar_offset_m = torch.tensor(
+            [cfg.lidar_offset_x_m, cfg.lidar_offset_y_m, cfg.lidar_offset_z_m],
+            device=means.device,
+            dtype=means.dtype,
+        )
+
+        def wrap_degrees_tensor(angles: Tensor) -> Tensor:
+            return torch.remainder(angles + 180.0, 360.0) - 180.0
+
+        def collect_matches(scale_guess: float) -> Tuple[List[Dict], List[float]]:
+            image_results = []
+            all_ratios = []
+            lidar_offset_gsplat = lidar_offset_m * float(scale_guess)
+
+            for image_index, image_name in enumerate(self.parser.image_names):
+                samples = lidar_by_image.get(image_name)
+                if samples is None:
+                    samples = lidar_by_image.get(os.path.basename(image_name))
+                if not samples:
+                    continue
+
+                lidar_angles_np, lidar_distances_m_np = _aggregate_lidar_samples(samples)
+                if lidar_angles_np.size == 0:
+                    continue
+
+                camtoworld = torch.from_numpy(self.parser.camtoworlds[image_index]).to(
+                    device=means.device, dtype=means.dtype
+                )
+                worldtocam = torch.linalg.inv(camtoworld)
+                points_cam = (means_h @ worldtocam.T)[:, :3]
+
+                camera_id = self.parser.camera_ids[image_index]
+                K_np = self.parser.Ks_dict[camera_id]
+                width, height = self.parser.imsize_dict[camera_id]
+                fx, fy = float(K_np[0, 0]), float(K_np[1, 1])
+                cx, cy = float(K_np[0, 2]), float(K_np[1, 2])
+
+                z = points_cam[:, 2]
+                projected_x = fx * points_cam[:, 0] / z + cx
+                projected_y = fy * points_cam[:, 1] / z + cy
+                visible = (
+                    (z > cfg.near_plane)
+                    & (projected_x >= 0.0)
+                    & (projected_x < width)
+                    & (projected_y >= 0.0)
+                    & (projected_y < height)
+                )
+                if not torch.any(visible):
+                    continue
+
+                visible_points_lidar = points_cam[visible] - lidar_offset_gsplat
+                gs_distances = torch.linalg.norm(visible_points_lidar, dim=-1)
+                horizontal_angles = torch.rad2deg(
+                    torch.atan2(visible_points_lidar[:, 0], visible_points_lidar[:, 2])
+                )
+                vertical_angles = torch.rad2deg(
+                    torch.atan2(
+                        visible_points_lidar[:, 1],
+                        torch.linalg.norm(visible_points_lidar[:, [0, 2]], dim=-1),
+                    )
+                )
+
+                lidar_angles = torch.from_numpy(lidar_angles_np).to(
+                    device=means.device, dtype=means.dtype
+                )
+                lidar_distances_m = torch.from_numpy(lidar_distances_m_np).to(
+                    device=means.device, dtype=means.dtype
+                )
+                lidar_angles_camera = wrap_degrees_tensor(
+                    angle_sign * (lidar_angles + cfg.lidar_angle_offset_deg)
+                )
+
+                horizontal_diff = torch.abs(
+                    wrap_degrees_tensor(
+                        horizontal_angles[:, None] - lidar_angles_camera[None, :]
+                    )
+                )
+                vertical_diff = torch.abs(
+                    vertical_angles - float(cfg.lidar_vertical_angle_deg)
+                )
+                candidates = (
+                    (horizontal_diff <= cfg.lidar_angle_tolerance_deg)
+                    & (vertical_diff[:, None] <= cfg.lidar_vertical_tolerance_deg)
+                )
+
+                inf = torch.full_like(horizontal_diff, float("inf"))
+                matched_distances = torch.where(
+                    candidates, gs_distances[:, None], inf
+                ).min(dim=0).values
+                valid = torch.isfinite(matched_distances) & (lidar_distances_m > 0.0)
+                if not torch.any(valid):
+                    continue
+
+                ratios = (
+                    matched_distances[valid] / lidar_distances_m[valid]
+                ).cpu().numpy()
+                lidar_distances_valid = lidar_distances_m[valid].cpu().numpy()
+                gs_distances_valid = matched_distances[valid].cpu().numpy()
+                matched_angles = lidar_angles_np[valid.cpu().numpy()]
+
+                if ratios.size < cfg.lidar_min_matches_per_image:
+                    continue
+
+                all_ratios.extend(float(value) for value in ratios)
+                image_results.append(
+                    {
+                        "image_id": image_name,
+                        "matched_rays": int(ratios.size),
+                        "scale_gsplat_per_meter": float(np.median(ratios)),
+                        "mean_scale_gsplat_per_meter": float(np.mean(ratios)),
+                        "std_scale_gsplat_per_meter": float(np.std(ratios)),
+                        "median_lidar_distance_m": float(
+                            np.median(lidar_distances_valid)
+                        ),
+                        "median_gsplat_distance": float(np.median(gs_distances_valid)),
+                        "matched_lidar_angles_deg": [
+                            float(angle) for angle in matched_angles.tolist()
+                        ],
+                    }
+                )
+
+            return image_results, all_ratios
+
+        scale_iterations = []
+        scale_guess = 0.0
+        image_results = []
+        all_ratios = []
+        for iteration in range(cfg.lidar_scale_iterations):
+            image_results, all_ratios = collect_matches(scale_guess)
+            if not image_results:
+                break
+
+            image_scales_iter = np.asarray(
+                [result["scale_gsplat_per_meter"] for result in image_results],
+                dtype=np.float64,
+            )
+            next_scale = float(np.median(image_scales_iter))
+            offset_gsplat = (lidar_offset_m * next_scale).detach().cpu().numpy()
+            scale_iterations.append(
+                {
+                    "iteration": iteration,
+                    "input_scale_gsplat_per_meter": float(scale_guess),
+                    "output_scale_gsplat_per_meter": next_scale,
+                    "lidar_offset_camera_gsplat": [
+                        float(value) for value in offset_gsplat.tolist()
+                    ],
+                    "num_images": len(image_results),
+                    "num_matched_rays": len(all_ratios),
+                }
+            )
+            if abs(next_scale - scale_guess) <= cfg.lidar_scale_convergence_eps:
+                scale_guess = next_scale
+                break
+            scale_guess = next_scale
+
+        if not image_results:
+            print("[Lidar scale] No image had enough matched lidar rays.")
+            return None
+
+        image_scales = np.asarray(
+            [result["scale_gsplat_per_meter"] for result in image_results],
+            dtype=np.float64,
+        )
+        all_ratios_np = np.asarray(all_ratios, dtype=np.float64)
+        payload = {
+            "step": int(step),
+            "unit": "gsplat_units_per_meter",
+            "global_lidar_scale_gsplat_per_meter": float(np.median(image_scales)),
+            "global_lidar_scale_all_rays_median": float(np.median(all_ratios_np)),
+            "mean_image_scale_gsplat_per_meter": float(np.mean(image_scales)),
+            "std_image_scale_gsplat_per_meter": float(np.std(image_scales)),
+            "num_images": len(image_results),
+            "num_matched_rays": int(all_ratios_np.size),
+            "distances_path": distances_path,
+            "lidar_offset_camera_m": [
+                cfg.lidar_offset_x_m,
+                cfg.lidar_offset_y_m,
+                cfg.lidar_offset_z_m,
+            ],
+            "lidar_offset_camera_gsplat": [
+                float(value)
+                for value in (lidar_offset_m * scale_guess).detach().cpu().numpy().tolist()
+            ],
+            "scale_iterations": scale_iterations,
+            "matching": {
+                "angle_offset_deg": cfg.lidar_angle_offset_deg,
+                "angle_sign": -1 if angle_sign < 0 else 1,
+                "angle_tolerance_deg": cfg.lidar_angle_tolerance_deg,
+                "vertical_angle_deg": cfg.lidar_vertical_angle_deg,
+                "vertical_tolerance_deg": cfg.lidar_vertical_tolerance_deg,
+            },
+            "images": image_results,
+        }
+
+        step_path = f"{self.stats_dir}/lidar_scale_step{step:04d}.json"
+        latest_path = f"{cfg.result_dir}/lidar_scale.json"
+        for output_path in [step_path, latest_path]:
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+
+        print(
+            "[Lidar scale] "
+            f"{payload['global_lidar_scale_gsplat_per_meter']:.6f} gsplat/m "
+            f"from {payload['num_images']} images and {payload['num_matched_rays']} rays."
+        )
+        return payload
+
     def train(self):
         cfg = self.cfg
         device = self.device
@@ -953,6 +1276,7 @@ class Runner:
                     format="ply",
                     save_to=f"{self.ply_dir}/point_cloud_{step}.ply",
                 )
+                self.compute_lidar_scale(step)
 
             # Turn Gradients into Sparse Tensor before running optimizer
             if cfg.sparse_grad:
@@ -1444,6 +1768,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
         runner.render_traj(step=step)
         if cfg.compression is not None:
             runner.run_compression(step=step)
+        runner.compute_lidar_scale(step=step)
     else:
         runner.train()
         runner.export_ppisp_reports()
@@ -1451,7 +1776,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     if not cfg.disable_viewer:
         runner.viewer.complete()
         print("Viewer running... Ctrl+C to exit.")
-        time.sleep(1000000)
+        # time.sleep(1000000)
 
 if __name__ == "__main__":
     import sys

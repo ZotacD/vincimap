@@ -19,18 +19,89 @@ def colmap_installed(colmap_path: str = "colmap") -> bool:
 
 
 """
+Génère un fichier projet COLMAP
+dans le dossier accessible via ``data_path``.
+
+Crée le dossier ``data_path`` s'il n'existe pas.
+"""
+def project_generator(data_path: str, filename: str = "project.ini", colmap_path: str = "colmap") -> None:
+    output_dir = Path(data_path)
+    output_file = output_dir / filename
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "project_generator",
+                "--output_path",
+                str(output_file),
+            ],
+            check=True,
+            text=True,
+        )
+
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during project generation :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
+Crée une base de données COLMAP
+accessible via ``database_path``.
+
+Crée le dossier parent de ``database_path`` s'il n'existe pas.
+"""
+def database_creator(database_path: str, colmap_path: str = "colmap") -> None:
+    output_file = Path(database_path)
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "database_creator",
+                "--database_path",
+                str(output_file),
+            ],
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during database creation :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
 Reconstruit automatiquement une scène 3D
 dans l'espace de travail accessible via ``workspace_path``
 à partir des images accessibles via ``images_path``.
 
 Crée le dossier ``workspace_path`` s'il n'existe pas.
 """
-def automatic_reconstructor(workspace_path: str, images_path: str, colmap_path: str = "colmap") -> None:
+def automatic_reconstructor(
+    workspace_path: str,
+    images_path: str,
+    project_path: str,
+    colmap_path: str = "colmap",
+) -> None:
     output_dir = Path(workspace_path)
     input_dir = Path(images_path)
+    project_file = Path(project_path)
 
     if not input_dir.is_dir():
         raise FileNotFoundError(f"Images folder not found : {input_dir}")
+
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Project file not found : {project_file}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -39,10 +110,10 @@ def automatic_reconstructor(workspace_path: str, images_path: str, colmap_path: 
             [
                 colmap_path,
                 "automatic_reconstructor",
+                "--project_path",
+                str(project_file),
                 "--workspace_path",
                 str(output_dir),
-                "--image_path",
-                str(input_dir),
                 "--dense",
                 "false",
                 "--data_type",
