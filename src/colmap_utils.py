@@ -168,6 +168,72 @@ def mapper(project_path: str, colmap_path: str = "colmap") -> None:
 
 
 """
+Filtre les points 3D d'un modele sparse COLMAP.
+
+Utilise le projet COLMAP accessible via ``project_path``.
+"""
+def point_filtering(
+    project_path: str,
+    colmap_path: str = "colmap",
+) -> None:
+    project_file = Path(project_path)
+
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Project file not found : {project_file}")
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "point_filtering",
+                "--project_path",
+                str(project_file),
+            ],
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during point filtering :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
+Optimise un modele sparse COLMAP avec bundle_adjuster.
+
+Utilise le projet COLMAP accessible via ``project_path``.
+"""
+def bundle_adjuster(
+    project_path: str,
+    colmap_path: str = "colmap",
+) -> None:
+    project_file = Path(project_path)
+
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Project file not found : {project_file}")
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "bundle_adjuster",
+                "--project_path",
+                str(project_file),
+            ],
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during bundle adjustment :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
 Reconstruit automatiquement une scène 3D
 dans l'espace de travail accessible via ``workspace_path``
 à partir des images accessibles via ``images_path``.

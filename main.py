@@ -43,6 +43,7 @@ STEP_ORDER = [
     "link_image_with_distances",
     "reconstruct_sparse_model",
     "merge_sparse_submodels",
+    "decrease_noise",
     "create_sparse_txt_model",
     "create_scatter_plot_ply",
     "run_gaussian_training",
@@ -299,7 +300,7 @@ def reconstruct_sparse_model(
     sparse_path = Path(data_path) / "sparse"
     sparse_path.mkdir(exist_ok=True)
 
-    configs_path = create_colmap_workspace_configs(
+    configs_path = create_workspace_configs(
         data_path,
         database_path,
         images_path,
@@ -329,7 +330,7 @@ def reconstruct_sparse_model(
 
     return sparse_path
 
-def create_colmap_workspace_configs(
+def create_workspace_configs(
     data_path: Path,
     database_path: Path,
     images_path: Path,
@@ -338,44 +339,137 @@ def create_colmap_workspace_configs(
     configs_path = Path(data_path) / "configs"
     configs_path.mkdir(parents=True, exist_ok=True)
 
-    write_colmap_workspace_config(
-        Path("configs") / "feature_extractor.ini",
-        configs_path / "feature_extractor.ini",
-        {
-            "database_path": database_path,
-            "image_path": images_path,
-        },
-    )
-    write_colmap_workspace_config(
-        Path("configs") / "sequential_matcher.ini",
-        configs_path / "sequential_matcher.ini",
-        {
-            "database_path": database_path,
-        },
-    )
-    write_colmap_workspace_config(
-        Path("configs") / "mapper.ini",
-        configs_path / "mapper.ini",
-        {
-            "database_path": database_path,
-            "image_path": images_path,
-            "output_path": sparse_path,
-        },
-    )
+    workspace_path = configs_path.parent.parent
+    result_path = workspace_path / "result"
+    linked_distances_path = Path(data_path) / "distances.txt"
+
+    configs_to_create = [
+        (
+            Path("configs") / "colmap" / "feature_extractor.ini",
+            configs_path / "feature_extractor.ini",
+            None,
+            {
+                "database_path": database_path,
+                "image_path": images_path,
+            },
+        ),
+        (
+            Path("configs") / "colmap" / "sequential_matcher.ini",
+            configs_path / "sequential_matcher.ini",
+            None,
+            {
+                "database_path": database_path,
+            },
+        ),
+        (
+            Path("configs") / "colmap" / "mapper.ini",
+            configs_path / "mapper.ini",
+            None,
+            {
+                "database_path": database_path,
+                "image_path": images_path,
+                "output_path": sparse_path,
+            },
+        ),
+        (
+            Path("configs") / "simple_trainer" / "trainer.ini",
+            configs_path / "trainer.ini",
+            "trainer",
+            {
+                "data_dir": data_path,
+                "result_dir": result_path,
+            },
+        ),
+        (
+            Path("configs") / "distances_computer" / "distances_computer.ini",
+            configs_path / "distances_computer.ini",
+            "distances_computer",
+            {
+                "distances_path": linked_distances_path,
+            },
+        ),
+    ]
+
+    for template_path, output_path, section_name, values in configs_to_create:
+        write_workspace_config(
+            template_path,
+            output_path,
+            values,
+            section_name=section_name,
+        )
 
     return configs_path
 
-def write_colmap_workspace_config(
+def write_workspace_config(
     template_path: Path,
     output_path: Path,
     values: dict[str, Path],
+    section_name: str | None = None,
 ) -> None:
     config_content = Path(template_path).read_text(encoding="utf-8")
+    config_content = apply_workspace_config_values(
+        config_content,
+        values,
+        section_name=section_name,
+    )
 
     with Path(output_path).open("w", encoding="utf-8") as output_file:
-        for key, value in values.items():
-            output_file.write(f"{key} = {value}\n")
         output_file.write(config_content)
+
+def apply_workspace_config_values(
+    config_content: str,
+    values: dict[str, Path],
+    section_name: str | None = None,
+) -> str:
+    value_lines = [f"{key} = {value}\n" for key, value in values.items()]
+
+    if section_name is None:
+        return "".join(value_lines) + config_content
+
+    lines = config_content.splitlines(keepends=True)
+    section_header = f"[{section_name}]"
+    section_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip().lower() == section_header.lower()
+        ),
+        None,
+    )
+
+    if section_start is None:
+        suffix = "" if config_content.endswith("\n") else "\n"
+        return (
+            config_content
+            + suffix
+            + "\n"
+            + section_header
+            + "\n"
+            + "".join(value_lines)
+        )
+
+    section_end = next(
+        (
+            index
+            for index in range(section_start + 1, len(lines))
+            if lines[index].lstrip().startswith("[")
+        ),
+        len(lines),
+    )
+
+    dynamic_keys = set(values)
+    section_lines = [
+        line
+        for line in lines[section_start + 1:section_end]
+        if line.split("=", 1)[0].strip() not in dynamic_keys
+    ]
+
+    return "".join(
+        lines[:section_start + 1]
+        + value_lines
+        + section_lines
+        + lines[section_end:]
+    )
 
 def merge_sparse_submodels(
     sparse_path: Path,
@@ -389,19 +483,59 @@ def merge_sparse_submodels(
     if not submodels:
         raise FileNotFoundError(f"No sparse submodels found in : {sparse_path}")
 
-    merged_model_path = submodels[0]
+    merged_sparse_0_path = submodels[0]
 
     for submodel_path in submodels[1:]:
-        print(f'Merging sparse {submodel_path.name} with sparse {merged_model_path.name}')
+        print(f'Merging sparse {submodel_path.name} with sparse {merged_sparse_0_path.name}')
         colmap_utils.model_merger(
-            str(merged_model_path),
+            str(merged_sparse_0_path),
             str(submodel_path),
-            str(merged_model_path),
+            str(merged_sparse_0_path),
             colmap_path=colmap_path,
         )
         shutil.rmtree(submodel_path)
 
-    return merged_model_path
+    return merged_sparse_0_path
+
+def decrease_noise(
+    data_path: Path,
+    merged_sparse_0_path: Path,
+    colmap_path: str,
+) -> Path:
+    configs_path = Path(data_path) / "configs"
+    configs_path.mkdir(parents=True, exist_ok=True)
+
+    point_filtering_config_path = configs_path / "point_filtering.ini"
+    bundle_adjuster_config_path = configs_path / "bundle_adjuster.ini"
+
+    write_workspace_config(
+        Path("configs") / "colmap" / "point_filtering.ini",
+        point_filtering_config_path,
+        {
+            "input_path": merged_sparse_0_path,
+            "output_path": merged_sparse_0_path,
+        },
+    )
+
+    colmap_utils.point_filtering(
+        point_filtering_config_path,
+        colmap_path=colmap_path,
+    )
+
+    write_workspace_config(
+        Path("configs") / "colmap" / "bundle_adjuster.ini",
+        bundle_adjuster_config_path,
+        {
+            "input_path": merged_sparse_0_path,
+            "output_path": merged_sparse_0_path,
+        },
+    )
+    colmap_utils.bundle_adjuster(
+        bundle_adjuster_config_path,
+        colmap_path=colmap_path,
+    )
+
+    return merged_sparse_0_path
 
 def create_scatter_plot_ply(
     sparse_path: Path,
@@ -417,7 +551,7 @@ def create_scatter_plot_ply(
 
 def create_sparse_txt_model(
     sparse_path: Path,
-    merged_model_path: Path,
+    merged_sparse_0_path: Path,
     colmap_path: str,
 ) -> Path:
     sparse_0_bin_path = Path(sparse_path) / "0_bin"
@@ -425,7 +559,7 @@ def create_sparse_txt_model(
     sparse_0_txt_path.mkdir(parents=True, exist_ok=True)
     sparse_0_path = Path(sparse_path) / "0"
 
-    merged_model_path.rename(sparse_0_bin_path)
+    merged_sparse_0_path.rename(sparse_0_bin_path)
 
     colmap_utils.model_converter(
         str(sparse_0_bin_path),
@@ -474,7 +608,7 @@ def run_pipeline_from_step(step: str,
     start_index = STEP_ORDER.index(step)
     steps_to_run = STEP_ORDER[start_index:]
 
-    merged_model_path = None
+    merged_sparse_0_path = None
     sparse_0_path = None
 
     for current_step in steps_to_run:
@@ -505,17 +639,32 @@ def run_pipeline_from_step(step: str,
             )
 
         elif current_step == "merge_sparse_submodels":
-            merged_model_path = merge_sparse_submodels(
+            merged_sparse_0_path = merge_sparse_submodels(
                 sparse_path=sparse_path,
                 colmap_path=colmap_path,
             )
 
+        elif current_step == "decrease_noise":
+            if merged_sparse_0_path is None:
+                if (sparse_path / "0").exists():
+                    merged_sparse_0_path = sparse_path / "0"
+                else:
+                    raise FileNotFoundError(
+                        f"No merged model found in : {sparse_path}"
+                    )
+
+            merged_sparse_0_path = decrease_noise(
+                data_path=data_path,
+                merged_sparse_0_path=merged_sparse_0_path,
+                colmap_path=colmap_path,
+            )
+
         elif current_step == "create_sparse_txt_model":
-            if merged_model_path is None:
+            if merged_sparse_0_path is None:
                 if (sparse_path / "0_bin").exists():
-                    merged_model_path = sparse_path / "0_bin"
+                    merged_sparse_0_path = sparse_path / "0_bin"
                 elif (sparse_path / "0").exists():
-                    merged_model_path = sparse_path / "0"
+                    merged_sparse_0_path = sparse_path / "0"
                 else:
                     raise FileNotFoundError(
                         f"No merged model found in : {sparse_path}"
@@ -523,7 +672,7 @@ def run_pipeline_from_step(step: str,
 
             sparse_0_path = create_sparse_txt_model(
                 sparse_path=sparse_path,
-                merged_model_path=merged_model_path,
+                merged_sparse_0_path=merged_sparse_0_path,
                 colmap_path=colmap_path,
             )
 
