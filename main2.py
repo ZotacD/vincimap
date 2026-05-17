@@ -1,11 +1,12 @@
 import argparse
-import configparser
 import csv
 import dataclasses
 import math
 import os
 import shutil
 from pathlib import Path
+
+from configobj import ConfigObj
 
 import src.colmap_utils as colmap_utils
 import src.ffmpeg_utils as ffmpeg_utils
@@ -54,12 +55,6 @@ def load_args() -> argparse.Namespace:
         ),
     )
     return parser.parse_args()
-
-
-def parser() -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    cfg.optionxform = str
-    return cfg
 
 
 def full_path(path: str | Path) -> Path:
@@ -111,38 +106,16 @@ def paths(workspace_path: Path) -> tuple[Path, Path, Path, Path]:
     return data_path, data_path / "images", data_path / "sparse", workspace_path / "configs"
 
 
-def section(path: Path, name: str) -> configparser.SectionProxy:
-    cfg = parser()
-    cfg.read(path, encoding="utf-8")
-    return cfg[name]
+def config(path: Path) -> ConfigObj:
+    return ConfigObj(str(path), encoding="utf-8", list_values=False, write_empty_values=True)
 
 
-def workspace_section(workspace_path: Path) -> configparser.SectionProxy:
+def section(path: Path, name: str):
+    return config(path)[name]
+
+
+def workspace_section(workspace_path: Path):
     return section(workspace_path / "configs" / "workspace.ini", "workspace")
-
-
-def inject_values(content: str, values: dict[str, object], section_name: str | None) -> str:
-    lines = content.splitlines()
-    new_lines = [f"{key} = {value}" for key, value in values.items()]
-
-    if section_name is None:
-        return "\n".join(new_lines + lines) + "\n"
-
-    header = f"[{section_name}]"
-    start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
-    if start is None:
-        return "\n".join(lines + ["", header] + new_lines) + "\n"
-
-    end = next(
-        (i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
-        len(lines),
-    )
-    keys = set(values)
-    body = [
-        line for line in lines[start + 1:end]
-        if line.split("=", 1)[0].strip() not in keys
-    ]
-    return "\n".join(lines[:start + 1] + new_lines + body + lines[end:]) + "\n"
 
 
 def write_config(
@@ -152,8 +125,14 @@ def write_config(
     section_name: str | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    content = inject_values(template_path.read_text(encoding="utf-8"), values, section_name)
-    output_path.write_text(content, encoding="utf-8")
+    cfg = config(template_path)
+    target = cfg if section_name is None else cfg.setdefault(section_name, {})
+
+    for key, value in values.items():
+        target[key] = str(value)
+
+    cfg.filename = str(output_path)
+    cfg.write()
 
 
 def create_workspace_configs(
@@ -242,19 +221,6 @@ def angle_in_fov(angle: float, fov: float) -> bool:
     return fov >= 360.0 or abs((angle + 180.0) % 360.0 - 180.0) <= fov / 2.0
 
 
-def find_column(header: list[str], name: str) -> int:
-    lowered_name = name.lower()
-    for i, col in enumerate(header):
-        if col.strip().lower() == lowered_name:
-            return i
-
-    for i, col in enumerate(header):
-        if lowered_name in col.strip().lower():
-            return i
-
-    raise ValueError(f"Distances file must contain a {name} column.")
-
-
 def link_images_with_distances(
     distances_path: str,
     data_path: Path,
@@ -275,8 +241,8 @@ def link_images_with_distances(
         rows = [row for row in csv.reader(f, dialect) if any(cell.strip() for cell in row)]
 
     header, data_rows = rows[0], rows[1:]
-    angle_col = find_column(header, "angle")
-    distance_col = find_column(header, "distance")
+    angle_col = "angle"
+    distance_col = "distance"
     data_rows = [
         row for row in data_rows
         if (
@@ -329,9 +295,9 @@ def action_create_workspace(args: argparse.Namespace) -> None:
 
     workspace = workspace_section(workspace_path)
     trainer = section(configs_path / "trainer.ini", "trainer")
-    fps = min(math.ceil(ffmpeg_utils.frame_rate_from_video(video_path)), workspace.getint("video_frame_rate"))
+    fps = min(math.ceil(ffmpeg_utils.frame_rate_from_video(video_path)), workspace.as_int("video_frame_rate"))
     duration = ffmpeg_utils.duration_from_video(video_path)
-    data_factor = trainer.getint("data_factor")
+    data_factor = trainer.as_int("data_factor")
 
     write_config(
         configs_path / "workspace.ini",
@@ -348,7 +314,7 @@ def action_create_workspace(args: argparse.Namespace) -> None:
         images_path=images_path,
         duration=duration,
         fps=fps,
-        fov=workspace.getfloat("video_fov"),
+        fov=workspace.as_float("video_fov"),
     )
 
 def action_run_colmap(args: argparse.Namespace) -> None:
@@ -424,6 +390,19 @@ def bool_to_args(name: str, value: bool, default: bool | None) -> list[str]:
     return [] if default is False else [f"--no-{name}"]
 
 
+def trainer_strategy_options(workspace_path: Path) -> dict[str, object]:
+    _, _, _, configs_path = paths(workspace_path)
+    cfg = config(configs_path / "trainer.ini")
+    trainer = cfg["trainer"]
+    strategy = trainer.get("strategy", "default").strip() or "default"
+    section_name = f"{strategy}_strategy"
+
+    if section_name not in cfg:
+        return {}
+
+    return {strategy: cfg[section_name]}
+
+
 def training_args(workspace_path: Path) -> list[str]:
     workspace_path = full_path(workspace_path)
     _, _, _, configs_path = paths(workspace_path)
@@ -453,7 +432,11 @@ def action_run_gaussian_training(args: argparse.Namespace) -> None:
             "and the required binaries are available in the PATH."
         )
 
-    simple_trainer.run_cli_args(training_args(full_path(args.workspace_path)))
+    workspace_path = full_path(args.workspace_path)
+    simple_trainer.run_cli_args(
+        training_args(workspace_path),
+        strategy_options=trainer_strategy_options(workspace_path),
+    )
 
 
 def main() -> None:

@@ -3,7 +3,7 @@ import math
 import os
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -1354,14 +1354,48 @@ class Runner:
             )
         return renders
 
-def build_configs() -> Dict[str, Tuple[str, Config]]:
+def _strategy_kwargs(strategy_cls, options) -> Dict:
+    strategy_fields = {field.name: field for field in fields(strategy_cls)}
+    kwargs = {}
+
+    for key, value in options.items():
+        if not str(value).strip():
+            continue
+
+        if key not in strategy_fields:
+            raise ValueError(f"Unknown option for {strategy_cls.__name__}: {key}")
+
+        field_info = strategy_fields[key]
+        default = field_info.default
+        if default is MISSING:
+            default = (
+                ""
+                if field_info.default_factory is MISSING
+                else field_info.default_factory()
+            )
+
+        if isinstance(default, bool):
+            kwargs[key] = options.as_bool(key)
+        elif isinstance(default, int) and not isinstance(default, bool):
+            kwargs[key] = options.as_int(key)
+        elif isinstance(default, float):
+            kwargs[key] = options.as_float(key)
+        else:
+            kwargs[key] = value
+
+    return kwargs
+
+
+def build_configs(strategy_options: Optional[Dict[str, object]] = None) -> Dict[str, Tuple[str, Config]]:
+    strategy_options = strategy_options or {}
+    default_options = {"verbose": True, **_strategy_kwargs(DefaultStrategy, strategy_options.get("default", {}))}
+    mcmc_options = {"verbose": True, **_strategy_kwargs(MCMCStrategy, strategy_options.get("mcmc", {}))}
+
     return {
         "default": (
             "Gaussian splatting training using densification heuristics from the original paper.",
             Config(
-                strategy=DefaultStrategy(
-                    verbose=True
-                ),
+                strategy=DefaultStrategy(**default_options),
             ),
         ),
         "mcmc": (
@@ -1371,14 +1405,17 @@ def build_configs() -> Dict[str, Tuple[str, Config]]:
                 init_scale=0.1,
                 opacity_reg=0.01,
                 scale_reg=0.01,
-                strategy=MCMCStrategy(verbose=True),
+                strategy=MCMCStrategy(**mcmc_options),
             ),
         ),
     }
 
 
-def prepare_cfg_from_argv(argv: List[str]) -> Config:
-    configs = build_configs()
+def prepare_cfg_from_argv(
+    argv: List[str],
+    strategy_options: Optional[Dict[str, object]] = None,
+) -> Config:
+    configs = build_configs(strategy_options)
     cfg = tyro.extras.overridable_config_cli(configs, args=argv)
     cfg.adjust_steps(cfg.steps_scaler)
 
@@ -1400,7 +1437,10 @@ def prepare_cfg_from_argv(argv: List[str]) -> Config:
     return cfg
 
 
-def run_cli_args(argv: List[str]) -> None:
+def run_cli_args(
+    argv: List[str],
+    strategy_options: Optional[Dict[str, object]] = None,
+) -> None:
     """
     Usage:
 
@@ -1413,7 +1453,7 @@ def run_cli_args(argv: List[str]) -> None:
 
     """
 
-    cfg = prepare_cfg_from_argv(argv)
+    cfg = prepare_cfg_from_argv(argv, strategy_options)
     cli(main, cfg, verbose=True)
 
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):

@@ -20,7 +20,6 @@
 # 13. Ecrire le resultat dans un JSON par step et dans un JSON "latest".
 
 import csv
-import configparser
 import json
 import math
 import os
@@ -28,28 +27,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from configobj import ConfigObj
 import numpy as np
 import torch
 from torch import Tensor
-
-
-def _first_matching_column(fieldnames: List[str], candidates: List[str]) -> str:
-    # Normalise les noms de colonnes pour accepter des variations de casse/espaces.
-    normalized = {name.strip().lower(): name for name in fieldnames}
-
-    # Cherche d'abord une correspondance exacte avec les noms attendus.
-    for candidate in candidates:
-        if candidate in normalized:
-            return normalized[candidate]
-
-    # Sinon, accepte une colonne qui contient le mot attendu dans son nom.
-    for name in fieldnames:
-        lowered = name.strip().lower()
-        if any(candidate in lowered for candidate in candidates):
-            return name
-
-    raise ValueError(f"Missing one of columns {candidates} in distances file.")
-
 
 def _load_distance_measurements(
     distances_path: str,
@@ -122,11 +103,10 @@ class DistancesComputer:
         near_plane: float,
     ) -> "DistancesComputer":
         config_path = Path(data_dir).parent / "configs" / "distances_computer.ini"
-        config = configparser.ConfigParser()
-        config.read(config_path, encoding="utf-8")
+        config = ConfigObj(str(config_path), encoding="utf-8", list_values=False, write_empty_values=True)
         distances_config = config["distances_computer"]
 
-        distances_path = distances_config.get("distances_path", fallback="").strip()
+        distances_path = distances_config.get("distances_path", "").strip()
         if not distances_path:
             distances_path = str(Path(data_dir) / "distances.txt")
         elif not Path(distances_path).is_absolute():
@@ -138,7 +118,7 @@ class DistancesComputer:
                 distances_path = str(workspace_relative_path)
 
         return cls(
-            enabled=distances_config.getboolean("enabled", fallback=True),
+            enabled=distances_config.as_bool("enabled") if "enabled" in distances_config else True,
             distances_path=distances_path,
             result_dir=result_dir,
             stats_dir=stats_dir,
@@ -146,21 +126,12 @@ class DistancesComputer:
             splats=splats,
             parser=parser,
             near_plane=near_plane,
-            angle_offset_deg=distances_config.getfloat("angle_offset_deg", fallback=0.0),
-            angle_sign=distances_config.getint("angle_sign", fallback=1),
-            angle_tolerance_deg=distances_config.getfloat(
-                "angle_tolerance_deg",
-                fallback=0.5,
-            ),
-            vertical_angle_deg=distances_config.getfloat("vertical_angle_deg", fallback=0.0),
-            vertical_tolerance_deg=distances_config.getfloat(
-                "vertical_tolerance_deg",
-                fallback=1.0,
-            ),
-            min_matches_per_image=distances_config.getint(
-                "min_matches_per_image",
-                fallback=3,
-            ),
+            angle_offset_deg=distances_config.as_float("angle_offset_deg") if "angle_offset_deg" in distances_config else 0.0,
+            angle_sign=distances_config.as_int("angle_sign") if "angle_sign" in distances_config else 1,
+            angle_tolerance_deg=distances_config.as_float("angle_tolerance_deg") if "angle_tolerance_deg" in distances_config else 0.5,
+            vertical_angle_deg=distances_config.as_float("vertical_angle_deg") if "vertical_angle_deg" in distances_config else 0.0,
+            vertical_tolerance_deg=distances_config.as_float("vertical_tolerance_deg") if "vertical_tolerance_deg" in distances_config else 1.0,
+            min_matches_per_image=distances_config.as_int("min_matches_per_image") if "min_matches_per_image" in distances_config else 3,
         )
 
     def __init__(
