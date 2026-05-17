@@ -30,6 +30,7 @@
 
 import argparse
 import csv
+import os
 import src.ffmpeg_utils as ffmpeg_utils
 import src.colmap_utils as colmap_utils
 import torch
@@ -48,6 +49,43 @@ STEP_ORDER = [
     "create_scatter_plot_ply",
     "run_gaussian_training",
 ]
+
+
+def full_path(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve()
+
+
+def project_relative_path(path: str | Path) -> Path:
+    path = full_path(path)
+    project_path = full_path(Path.cwd())
+    try:
+        return path.relative_to(project_path)
+    except ValueError:
+        try:
+            return Path(os.path.relpath(path, project_path))
+        except ValueError:
+            return path
+
+
+def config_path_value(path: str | Path) -> Path:
+    path = Path(path)
+    return path if path.is_absolute() else full_path(Path.cwd() / path)
+
+
+def executable_config_value(path: str, workspace_path: Path) -> str | Path:
+    executable_path = Path(path).expanduser()
+    if executable_path.parent != Path(".") or executable_path.is_absolute():
+        return executable_path.resolve()
+    return path
+
+
+def copy_file_to_workspace(source: str | Path, workspace_path: Path) -> Path:
+    source_path = full_path(source)
+    output_path = full_path(workspace_path) / source_path.name
+    if source_path != output_path:
+        shutil.copy2(source_path, output_path)
+    return output_path
+
 
 # Arguments
 
@@ -161,6 +199,19 @@ def find_angle_column_index(header: list[str]) -> int:
 
     raise ValueError("Distances file must contain an angle column.")
 
+
+def find_distance_column_index(header: list[str]) -> int:
+    for index, column_name in enumerate(header):
+        if column_name.strip().lower() == "distance(mm)":
+            return index
+
+    for index, column_name in enumerate(header):
+        if "distance" in column_name.strip().lower():
+            return index
+
+    raise ValueError("Distances file must contain a distance column.")
+
+
 # Etapes
 
 def extract_video_images(
@@ -231,31 +282,14 @@ def link_image_with_distances(
     if video_fov <= 0.0 or video_fov > 360.0:
         raise ValueError(f"Video FOV must be in ]0, 360], got {video_fov}.")
 
-    existing_image_id_index = next(
-        (
-            index for index, column_name in enumerate(header)
-            if column_name.strip().lower() == "image_id"
-        ),
-        None,
-    )
-
-    if existing_image_id_index is not None:
-        header = [
-            column_name for index, column_name in enumerate(header)
-            if index != existing_image_id_index
-        ]
-        distance_rows = [
-            [
-                value for index, value in enumerate(row)
-                if index != existing_image_id_index
-            ]
-            for row in distance_rows
-        ]
-
     angle_index = find_angle_column_index(header)
+    distance_index = find_distance_column_index(header)
     distance_rows = [
         row for row in distance_rows
-        if len(row) > angle_index and angle_in_video_fov(float(row[angle_index]), video_fov)
+        if (
+            len(row) > max(angle_index, distance_index)
+            and angle_in_video_fov(float(row[angle_index]), video_fov)
+        )
     ]
 
     if not distance_rows:
@@ -279,14 +313,14 @@ def link_image_with_distances(
             delimiter=dialect.delimiter,
             lineterminator="\n",
         )
-        writer.writerow(header + ["image_id"])
+        writer.writerow(["angle", "distance", "image_id"])
 
         for row_index, row in enumerate(distance_rows):
             image_index = min(
                 int(row_index / distances_per_image),
                 image_count - 1,
             )
-            writer.writerow(row + [image_names[image_index]])
+            writer.writerow([row[angle_index], row[distance_index], image_names[image_index]])
 
     return output_distances_path
 
@@ -335,11 +369,20 @@ def create_workspace_configs(
     database_path: Path,
     images_path: Path,
     sparse_path: Path,
+    video_path: str | None = None,
+    video_frame_rate: int | None = None,
+    video_fov: float | None = None,
+    distances_path: str | None = None,
+    colmap_path: str | None = None,
 ) -> Path:
+    data_path = full_path(data_path)
+    database_path = full_path(database_path)
+    images_path = full_path(images_path)
+    sparse_path = full_path(sparse_path)
     configs_path = Path(data_path) / "configs"
     configs_path.mkdir(parents=True, exist_ok=True)
 
-    workspace_path = configs_path.parent.parent
+    workspace_path = full_path(configs_path.parent.parent)
     result_path = workspace_path / "result"
     linked_distances_path = Path(data_path) / "distances.txt"
 
@@ -349,8 +392,8 @@ def create_workspace_configs(
             configs_path / "feature_extractor.ini",
             None,
             {
-                "database_path": database_path,
-                "image_path": images_path,
+                "database_path": project_relative_path(database_path),
+                "image_path": project_relative_path(images_path),
             },
         ),
         (
@@ -358,7 +401,7 @@ def create_workspace_configs(
             configs_path / "sequential_matcher.ini",
             None,
             {
-                "database_path": database_path,
+                "database_path": project_relative_path(database_path),
             },
         ),
         (
@@ -366,9 +409,9 @@ def create_workspace_configs(
             configs_path / "mapper.ini",
             None,
             {
-                "database_path": database_path,
-                "image_path": images_path,
-                "output_path": sparse_path,
+                "database_path": project_relative_path(database_path),
+                "image_path": project_relative_path(images_path),
+                "output_path": project_relative_path(sparse_path),
             },
         ),
         (
@@ -376,8 +419,8 @@ def create_workspace_configs(
             configs_path / "trainer.ini",
             "trainer",
             {
-                "data_dir": data_path,
-                "result_dir": result_path,
+                "data_dir": project_relative_path(data_path),
+                "result_dir": project_relative_path(result_path),
             },
         ),
         (
@@ -385,10 +428,26 @@ def create_workspace_configs(
             configs_path / "distances_computer.ini",
             "distances_computer",
             {
-                "distances_path": linked_distances_path,
+                "distances_path": project_relative_path(linked_distances_path),
             },
         ),
     ]
+
+    if video_path is not None and distances_path is not None and colmap_path is not None:
+        configs_to_create.append(
+            (
+                Path("configs") / "workspace" / "workspace.ini",
+                workspace_path / "workspace.ini",
+                "workspace",
+                {
+                    "video_path": project_relative_path(video_path),
+                    "video_frame_rate": video_frame_rate,
+                    "video_fov": video_fov,
+                    "distances_path": project_relative_path(distances_path),
+                    "colmap_path": executable_config_value(colmap_path, workspace_path),
+                },
+            )
+        )
 
     for template_path, output_path, section_name, values in configs_to_create:
         write_workspace_config(
@@ -403,7 +462,7 @@ def create_workspace_configs(
 def write_workspace_config(
     template_path: Path,
     output_path: Path,
-    values: dict[str, Path],
+    values: dict[str, object],
     section_name: str | None = None,
 ) -> None:
     config_content = Path(template_path).read_text(encoding="utf-8")
@@ -413,12 +472,13 @@ def write_workspace_config(
         section_name=section_name,
     )
 
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     with Path(output_path).open("w", encoding="utf-8") as output_file:
         output_file.write(config_content)
 
 def apply_workspace_config_values(
     config_content: str,
-    values: dict[str, Path],
+    values: dict[str, object],
     section_name: str | None = None,
 ) -> str:
     value_lines = [f"{key} = {value}\n" for key, value in values.items()]
@@ -502,6 +562,9 @@ def decrease_noise(
     merged_sparse_0_path: Path,
     colmap_path: str,
 ) -> Path:
+    data_path = full_path(data_path)
+    merged_sparse_0_path = full_path(merged_sparse_0_path)
+    workspace_path = data_path.parent
     configs_path = Path(data_path) / "configs"
     configs_path.mkdir(parents=True, exist_ok=True)
 
@@ -512,8 +575,8 @@ def decrease_noise(
         Path("configs") / "colmap" / "point_filtering.ini",
         point_filtering_config_path,
         {
-            "input_path": merged_sparse_0_path,
-            "output_path": merged_sparse_0_path,
+            "input_path": project_relative_path(merged_sparse_0_path),
+            "output_path": project_relative_path(merged_sparse_0_path),
         },
     )
 
@@ -526,8 +589,8 @@ def decrease_noise(
         Path("configs") / "colmap" / "bundle_adjuster.ini",
         bundle_adjuster_config_path,
         {
-            "input_path": merged_sparse_0_path,
-            "output_path": merged_sparse_0_path,
+            "input_path": project_relative_path(merged_sparse_0_path),
+            "output_path": project_relative_path(merged_sparse_0_path),
         },
     )
     colmap_utils.bundle_adjuster(
@@ -556,10 +619,19 @@ def create_sparse_txt_model(
 ) -> Path:
     sparse_0_bin_path = Path(sparse_path) / "0_bin"
     sparse_0_txt_path = Path(sparse_path) / "0_txt"
-    sparse_0_txt_path.mkdir(parents=True, exist_ok=True)
     sparse_0_path = Path(sparse_path) / "0"
 
+    for path in [sparse_0_bin_path, sparse_0_txt_path]:
+        if path.exists():
+            shutil.rmtree(path)
+
+    if not merged_sparse_0_path.exists():
+        raise FileNotFoundError(
+            f"Merged sparse model not found before conversion: {merged_sparse_0_path}"
+        )
+
     merged_sparse_0_path.rename(sparse_0_bin_path)
+    sparse_0_txt_path.mkdir(parents=True)
 
     colmap_utils.model_converter(
         str(sparse_0_bin_path),
@@ -705,7 +777,7 @@ def main(args, unknown_args):
     step = args.step
 
     if args.workspace_path is not None:
-        workspace_path = Path(args.workspace_path)
+        workspace_path = full_path(args.workspace_path)
         video_path = args.video_path
         video_name = workspace_path.name
     else:
@@ -716,7 +788,7 @@ def main(args, unknown_args):
 
         video_path = args.video_path
         video_name = Path(video_path).stem
-        workspace_path = Path("workspaces") / video_name
+        workspace_path = full_path(Path("workspaces") / video_name)
         workspace_path.mkdir(parents=True, exist_ok=False)
 
     data_path = workspace_path / "data"
@@ -730,11 +802,24 @@ def main(args, unknown_args):
     video_duration = None
 
     if video_path is not None:
+        video_path = copy_file_to_workspace(video_path, workspace_path)
+        distances_path = copy_file_to_workspace(args.distances_path, workspace_path)
         video_frame_rate = min(
             math.ceil(ffmpeg_utils.frame_rate_from_video(video_path)),
             args.video_frame_rate,
         )
         video_duration = ffmpeg_utils.duration_from_video(video_path)
+        create_workspace_configs(
+            data_path=data_path,
+            database_path=data_path / "database.db",
+            images_path=images_path,
+            sparse_path=sparse_path,
+            video_path=video_path,
+            video_frame_rate=video_frame_rate,
+            video_fov=args.video_fov,
+            distances_path=distances_path,
+            colmap_path=colmap_path,
+        )
     else:
         video_frame_rate = args.video_frame_rate
 
@@ -751,7 +836,7 @@ def main(args, unknown_args):
         sparse_path=sparse_path,
         video_path=video_path,
         video_name=video_name,
-        distances_path=args.distances_path,
+        distances_path=str(config_path_value(distances_path)) if video_path is not None else args.distances_path,
         video_duration=video_duration,
         video_frame_rate=video_frame_rate,
         video_fov=args.video_fov,

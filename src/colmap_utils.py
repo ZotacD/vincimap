@@ -1,6 +1,14 @@
 import subprocess
 from pathlib import Path
 
+
+def _project_cwd(project_file: Path) -> Path | None:
+    project_file = project_file.resolve()
+    for parent in project_file.parents:
+        if parent.name == "workspaces":
+            return parent.parent
+    return None
+
 """
 Vérifie si COLMAP est installé
 et accessible depuis le système.
@@ -98,6 +106,7 @@ def feature_extractor(project_path: str, colmap_path: str = "colmap") -> None:
                 "--project_path",
                 str(project_file),
             ],
+            cwd=_project_cwd(project_file),
             check=True,
             text=True,
         )
@@ -127,6 +136,7 @@ def sequential_matcher(project_path: str, colmap_path: str = "colmap") -> None:
                 "--project_path",
                 str(project_file),
             ],
+            cwd=_project_cwd(project_file),
             check=True,
             text=True,
         )
@@ -156,6 +166,7 @@ def mapper(project_path: str, colmap_path: str = "colmap") -> None:
                 "--project_path",
                 str(project_file),
             ],
+            cwd=_project_cwd(project_file),
             check=True,
             text=True,
         )
@@ -189,6 +200,7 @@ def point_filtering(
                 "--project_path",
                 str(project_file),
             ],
+            cwd=_project_cwd(project_file),
             check=True,
             text=True,
         )
@@ -222,6 +234,7 @@ def bundle_adjuster(
                 "--project_path",
                 str(project_file),
             ],
+            cwd=_project_cwd(project_file),
             check=True,
             text=True,
         )

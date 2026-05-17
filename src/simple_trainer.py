@@ -65,22 +65,6 @@ class Config:
     patch_size: Optional[int] = None
     # A global scaler that applies to the scene size related parameters
     global_scale: float = 1.0
-    # Compute the independent lidar scale (gsplat units per meter) after PLY export.
-    compute_lidar_scale: bool = True
-    # Path to the linked lidar distances file. Defaults to <data_dir>/distances.txt.
-    lidar_distances_path: Optional[str] = None
-    # Offset applied before matching lidar angles to camera horizontal angles.
-    lidar_angle_offset_deg: float = 0.0
-    # Sign applied to lidar angles before matching. Use -1 if the lidar scan is mirrored.
-    lidar_angle_sign: int = 1
-    # Horizontal angular tolerance used to match splat centers to lidar rays.
-    lidar_angle_tolerance_deg: float = 0.5
-    # Vertical angle of the 2D lidar plane in the camera frame.
-    lidar_vertical_angle_deg: float = 0.0
-    # Vertical angular tolerance around the 2D lidar plane.
-    lidar_vertical_tolerance_deg: float = 1.0
-    # Minimum matched lidar rays required to keep an image in the global scale.
-    lidar_min_matches_per_image: int = 3
     # Normalize the world space
     normalize_world_space: bool = True
     # Camera model
@@ -678,26 +662,16 @@ class Runner:
         return render_colors, render_alphas, info
 
     @torch.no_grad()
-    def compute_lidar_scale(self, step: int) -> Optional[Dict]:
+    def compute_distance_scale(self, step: int) -> Optional[Dict]:
         cfg = self.cfg
-        distances_path = cfg.lidar_distances_path or os.path.join(
-            cfg.data_dir, "distances.txt"
-        )
-        computer = DistancesComputer(
-            enabled=cfg.compute_lidar_scale,
-            distances_path=distances_path,
+        computer = DistancesComputer.from_workspace_config(
+            data_dir=cfg.data_dir,
             result_dir=cfg.result_dir,
+            stats_dir=self.stats_dir,
             world_rank=self.world_rank,
             splats=self.splats,
             parser=self.parser,
             near_plane=cfg.near_plane,
-            angle_offset_deg=cfg.lidar_angle_offset_deg,
-            angle_sign=cfg.lidar_angle_sign,
-            angle_tolerance_deg=cfg.lidar_angle_tolerance_deg,
-            vertical_angle_deg=cfg.lidar_vertical_angle_deg,
-            vertical_tolerance_deg=cfg.lidar_vertical_tolerance_deg,
-            min_matches_per_image=cfg.lidar_min_matches_per_image,
-            stats_dir=self.stats_dir,
         )
         return computer.compute_scale(step)
 
@@ -994,7 +968,7 @@ class Runner:
                     format="ply",
                     save_to=f"{self.ply_dir}/point_cloud_{step}.ply",
                 )
-                self.compute_lidar_scale(step)
+                self.compute_distance_scale(step)
 
             # Turn Gradients into Sparse Tensor before running optimizer
             if cfg.sparse_grad:
@@ -1488,7 +1462,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
         runner.render_traj(step=step)
         if cfg.compression is not None:
             runner.run_compression(step=step)
-        runner.compute_lidar_scale(step=step)
+        runner.compute_distance_scale(step=step)
     else:
         runner.train()
         runner.export_ppisp_reports()

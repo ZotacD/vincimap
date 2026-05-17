@@ -20,10 +20,12 @@
 # 13. Ecrire le resultat dans un JSON par step et dans un JSON "latest".
 
 import csv
+import configparser
 import json
 import math
 import os
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -60,12 +62,9 @@ def _load_distance_measurements(
             raise ValueError(f"Distances file has no header: {distances_path}")
 
         # Retrouve les colonnes utiles meme si leurs noms varient legerement.
-        angle_key = _first_matching_column(reader.fieldnames, ["angle", "angle(deg)"])
-        distance_key = _first_matching_column(
-            reader.fieldnames, ["distance", "distance(mm)"]
-        )
-        image_key = _first_matching_column(reader.fieldnames, ["image_id", "image"])
-        distance_in_mm = "mm" in distance_key.lower()
+        angle_key = "angle"
+        distance_key = "distance"
+        image_key = "image_id"
 
         # Regroupe les mesures par image pour pouvoir les comparer aux cameras.
         grouped: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
@@ -78,7 +77,7 @@ def _load_distance_measurements(
             # Convertit les distances en metres et garde seulement les valeurs valides.
             angle_deg = float(row[angle_key])
             distance = float(row[distance_key])
-            distance_m = distance / 1000.0 if distance_in_mm else distance
+            distance_m = distance / 1000.0
             if distance_m > 0.0 and math.isfinite(distance_m):
                 grouped[image_name].append((angle_deg, distance_m))
 
@@ -110,6 +109,60 @@ def _wrap_degrees_tensor(angles: Tensor) -> Tensor:
 
 
 class DistancesComputer:
+    @classmethod
+    def from_workspace_config(
+        cls,
+        *,
+        data_dir: str,
+        result_dir: str,
+        stats_dir: str,
+        world_rank: int,
+        splats: torch.nn.ParameterDict,
+        parser,
+        near_plane: float,
+    ) -> "DistancesComputer":
+        config_path = Path(data_dir).parent / "configs" / "distances_computer.ini"
+        config = configparser.ConfigParser()
+        config.read(config_path, encoding="utf-8")
+        distances_config = config["distances_computer"]
+
+        distances_path = distances_config.get("distances_path", fallback="").strip()
+        if not distances_path:
+            distances_path = str(Path(data_dir) / "distances.txt")
+        elif not Path(distances_path).is_absolute():
+            repo_relative_path = Path.cwd() / distances_path
+            workspace_relative_path = Path(data_dir).parent / distances_path
+            if repo_relative_path.exists() or Path(distances_path).parts[:1] == ("workspaces",):
+                distances_path = str(repo_relative_path)
+            else:
+                distances_path = str(workspace_relative_path)
+
+        return cls(
+            enabled=distances_config.getboolean("enabled", fallback=True),
+            distances_path=distances_path,
+            result_dir=result_dir,
+            stats_dir=stats_dir,
+            world_rank=world_rank,
+            splats=splats,
+            parser=parser,
+            near_plane=near_plane,
+            angle_offset_deg=distances_config.getfloat("angle_offset_deg", fallback=0.0),
+            angle_sign=distances_config.getint("angle_sign", fallback=1),
+            angle_tolerance_deg=distances_config.getfloat(
+                "angle_tolerance_deg",
+                fallback=0.5,
+            ),
+            vertical_angle_deg=distances_config.getfloat("vertical_angle_deg", fallback=0.0),
+            vertical_tolerance_deg=distances_config.getfloat(
+                "vertical_tolerance_deg",
+                fallback=1.0,
+            ),
+            min_matches_per_image=distances_config.getint(
+                "min_matches_per_image",
+                fallback=3,
+            ),
+        )
+
     def __init__(
         self,
         *,
