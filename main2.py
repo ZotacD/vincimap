@@ -221,6 +221,42 @@ def angle_in_fov(angle: float, fov: float) -> bool:
     return fov >= 360.0 or abs((angle + 180.0) % 360.0 - 180.0) <= fov / 2.0
 
 
+def find_column(header: list[str], name: str) -> int:
+    lowered_name = name.lower()
+    for i, col in enumerate(header):
+        if col.strip().lower() == lowered_name:
+            return i
+
+    for i, col in enumerate(header):
+        if lowered_name in col.strip().lower():
+            return i
+
+    raise ValueError(f"Distances file must contain a {name} column.")
+
+
+def split_turns(rows: list[list[str]], angle_col: int) -> list[list[list[str]]]:
+    if not rows:
+        return []
+
+    start_angle = float(rows[0][angle_col])
+    turns = [[]]
+    passed_zero = False
+    previous_angle = start_angle
+
+    for row in rows:
+        angle = float(row[angle_col])
+        passed_zero = passed_zero or angle < previous_angle - 180.0
+
+        if turns[-1] and passed_zero and angle >= start_angle:
+            turns.append([])
+            passed_zero = False
+
+        turns[-1].append(row)
+        previous_angle = angle
+
+    return turns
+
+
 def link_images_with_distances(
     distances_path: str,
     data_path: Path,
@@ -241,30 +277,20 @@ def link_images_with_distances(
         rows = [row for row in csv.reader(f, dialect) if any(cell.strip() for cell in row)]
 
     header, data_rows = rows[0], rows[1:]
-    angle_col = "angle"
-    distance_col = "distance"
-    data_rows = [
-        row for row in data_rows
-        if (
-            len(row) > max(angle_col, distance_col)
-            and angle_in_fov(float(row[angle_col]), fov)
-        )
-    ]
-
+    angle_col = find_column(header, "angle")
+    distance_col = find_column(header, "distance")
     image_count = min(max(1, math.ceil(duration * fps)), len(image_names))
-    rows_per_image = len(data_rows) / image_count
+    valid_rows = [row for row in data_rows if len(row) > max(angle_col, distance_col)]
+    turns = split_turns(valid_rows, angle_col)
 
     with (data_path / "distances.txt").open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter=dialect.delimiter, lineterminator="\n")
         writer.writerow(["angle", "distance", "image_id"])
-        for i, row in enumerate(data_rows):
-            writer.writerow(
-                [
-                    row[angle_col],
-                    row[distance_col],
-                    image_names[min(int(i / rows_per_image), image_count - 1)],
-                ]
-            )
+        for turn_index, turn in enumerate(turns[:image_count]):
+            image_name = image_names[turn_index]
+            for row in turn:
+                if angle_in_fov(float(row[angle_col]), fov):
+                    writer.writerow([row[angle_col], row[distance_col], image_name])
 
 
 def action_create_workspace(args: argparse.Namespace) -> None:
