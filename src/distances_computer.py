@@ -126,12 +126,14 @@ class DistancesComputer:
             splats=splats,
             parser=parser,
             near_plane=near_plane,
+            pivot_deg=distances_config.as_float("pivot_deg") if "pivot_deg" in distances_config else 0.0,
+            angle_tolerance_deg=distances_config.as_float("angle_tolerance_deg") if "angle_tolerance_deg" in distances_config else 1.0,
+            line_tolerance_deg=distances_config.as_float("line_tolerance_deg") if "line_tolerance_deg" in distances_config else 2.0,
+            min_splat_matched_per_image=distances_config.as_int("min_splat_matched_per_image") if "min_splat_matched_per_image" in distances_config else 3,
+            offset_x_m=distances_config.as_float("offset_x_m") if "offset_x_m" in distances_config else 0.0,
+            offset_y_m=distances_config.as_float("offset_y_m") if "offset_y_m" in distances_config else 0.0,
+            offset_z_m=distances_config.as_float("offset_z_m") if "offset_z_m" in distances_config else 0.0,
             angle_offset_deg=distances_config.as_float("angle_offset_deg") if "angle_offset_deg" in distances_config else 0.0,
-            angle_sign=distances_config.as_int("angle_sign") if "angle_sign" in distances_config else 1,
-            angle_tolerance_deg=distances_config.as_float("angle_tolerance_deg") if "angle_tolerance_deg" in distances_config else 0.5,
-            vertical_angle_deg=distances_config.as_float("vertical_angle_deg") if "vertical_angle_deg" in distances_config else 0.0,
-            vertical_tolerance_deg=distances_config.as_float("vertical_tolerance_deg") if "vertical_tolerance_deg" in distances_config else 1.0,
-            min_matches_per_image=distances_config.as_int("min_matches_per_image") if "min_matches_per_image" in distances_config else 3,
         )
 
     def __init__(
@@ -145,12 +147,14 @@ class DistancesComputer:
         splats: torch.nn.ParameterDict,
         parser,
         near_plane: float,
-        angle_offset_deg: float,
-        angle_sign: int,
+        pivot_deg: float,
         angle_tolerance_deg: float,
-        vertical_angle_deg: float,
-        vertical_tolerance_deg: float,
-        min_matches_per_image: int,
+        line_tolerance_deg: float,
+        min_splat_matched_per_image: int,
+        offset_x_m: float,
+        offset_y_m: float,
+        offset_z_m: float,
+        angle_offset_deg: float,
     ) -> None:
         self.enabled = enabled
         self.distances_path = distances_path
@@ -160,12 +164,14 @@ class DistancesComputer:
         self.splats = splats
         self.parser = parser
         self.near_plane = near_plane
-        self.angle_offset_deg = angle_offset_deg
-        self.angle_sign = -1.0 if angle_sign < 0 else 1.0
+        self.pivot_deg = pivot_deg
         self.angle_tolerance_deg = angle_tolerance_deg
-        self.vertical_angle_deg = vertical_angle_deg
-        self.vertical_tolerance_deg = vertical_tolerance_deg
-        self.min_matches_per_image = min_matches_per_image
+        self.line_tolerance_deg = line_tolerance_deg
+        self.min_splat_matched_per_image = min_splat_matched_per_image
+        self.offset_x_m = offset_x_m
+        self.offset_y_m = offset_y_m
+        self.offset_z_m = offset_z_m
+        self.angle_offset_deg = angle_offset_deg
 
     @torch.no_grad()
     def compute_scale(self, step: int) -> Optional[Dict]:
@@ -183,8 +189,8 @@ class DistancesComputer:
         # Valide les parametres de matching avant de lancer un calcul couteux.
         if self.angle_tolerance_deg <= 0.0:
             raise ValueError("angle_tolerance_deg must be > 0.")
-        if self.vertical_tolerance_deg <= 0.0:
-            raise ValueError("vertical_tolerance_deg must be > 0.")
+        if self.line_tolerance_deg <= 0.0:
+            raise ValueError("line_tolerance_deg must be > 0.")
 
         print(f"[Distance scale] Computing gsplat/meter scale from {self.distances_path}")
 
@@ -312,28 +318,43 @@ class DistancesComputer:
             device=visible_points_cam.device, dtype=visible_points_cam.dtype
         )
 
-        # Applique l'offset/sign d'angle pour aligner les mesures avec la camera.
+        # Applique l'offset d'angle pour aligner les mesures avec la camera.
         measured_angles_camera = _wrap_degrees_tensor(
-            self.angle_sign * (measured_angles + self.angle_offset_deg)
+            measured_angles + self.angle_offset_deg
         )
+        pivot = math.radians(self.pivot_deg)
+        scan_weight = math.cos(pivot)
+        vertical_scan_weight = math.sin(pivot)
+
+        splat_scan_angles = (
+            horizontal_angles * scan_weight + vertical_angles * vertical_scan_weight
+        )
+        splat_fixed_angles = (
+            -horizontal_angles * vertical_scan_weight + vertical_angles * scan_weight
+        )
+        measured_scan_angles = measured_angles_camera
+        measured_fixed_angle = 0.0
 
         # Calcule les ecarts angulaires entre chaque splat visible et chaque direction mesuree.
-        horizontal_diff = torch.abs(
+        scan_diff = torch.abs(
             _wrap_degrees_tensor(
-                horizontal_angles[:, None] - measured_angles_camera[None, :]
+                splat_scan_angles[:, None] - measured_scan_angles[None, :]
             )
         )
-        vertical_diff = torch.abs(vertical_angles - float(self.vertical_angle_deg))
+        fixed_diff = torch.abs(
+            _wrap_degrees_tensor(splat_fixed_angles - measured_fixed_angle)
+        )
         candidates = (
-            (horizontal_diff <= self.angle_tolerance_deg)
-            & (vertical_diff[:, None] <= self.vertical_tolerance_deg)
+            (scan_diff <= self.angle_tolerance_deg)
+            & (fixed_diff[:, None] <= self.line_tolerance_deg)
         )
 
         # Pour chaque direction mesuree, garde le splat candidat le plus proche.
-        inf = torch.full_like(horizontal_diff, float("inf"))
-        matched_distances = torch.where(candidates, gs_distances[:, None], inf).min(
-            dim=0
-        ).values
+        inf = torch.full_like(scan_diff, float("inf"))
+        candidate_distances = torch.where(candidates, gs_distances[:, None], inf)
+        matched = candidate_distances.min(dim=0)
+        matched_distances = matched.values
+        matched_indices = matched.indices
 
         # Elimine les directions sans match et les distances mesurees invalides.
         valid = torch.isfinite(matched_distances) & (measured_distances_m > 0.0)
@@ -341,13 +362,21 @@ class DistancesComputer:
             return None, np.asarray([], dtype=np.float64)
 
         # Le ratio distance gsplat / distance metre donne un scale gsplat par metre.
-        ratios = (matched_distances[valid] / measured_distances_m[valid]).cpu().numpy()
-        measured_distances_valid = measured_distances_m[valid].cpu().numpy()
-        gs_distances_valid = matched_distances[valid].cpu().numpy()
-        matched_angles = measured_angles_np[valid.cpu().numpy()]
+        matched_points = visible_points_cam[matched_indices[valid]]
+        ratios_tensor = self._scale_ratios(matched_points, measured_distances_m[valid])
+        valid_ratios = torch.isfinite(ratios_tensor) & (ratios_tensor > 0.0)
+        if not torch.any(valid_ratios):
+            return None, np.asarray([], dtype=np.float64)
+
+        ratios = ratios_tensor[valid_ratios].cpu().numpy()
+        measured_distances_valid = measured_distances_m[valid][valid_ratios].cpu().numpy()
+        gs_distances_valid = matched_distances[valid][valid_ratios].cpu().numpy()
+        matched_angles = measured_angles_np[valid.cpu().numpy()][
+            valid_ratios.cpu().numpy()
+        ]
 
         # Ignore les images avec trop peu de directions matchees pour etre robustes.
-        if ratios.size < self.min_matches_per_image:
+        if ratios.size < self.min_splat_matched_per_image:
             return None, ratios
 
         return (
@@ -365,6 +394,32 @@ class DistancesComputer:
             },
             ratios,
         )
+
+    def _scale_ratios(self, points_cam: Tensor, measured_distances_m: Tensor) -> Tensor:
+        offset = torch.tensor(
+            [self.offset_x_m, self.offset_y_m, self.offset_z_m],
+            device=points_cam.device,
+            dtype=points_cam.dtype,
+        )
+        if torch.all(offset == 0.0):
+            return torch.linalg.norm(points_cam, dim=-1) / measured_distances_m
+
+        a = torch.sum(points_cam * points_cam, dim=-1)
+        b = -2.0 * torch.sum(points_cam * offset[None, :], dim=-1)
+        c = torch.sum(offset * offset) - measured_distances_m * measured_distances_m
+        discriminant = b * b - 4.0 * a * c
+        valid = (a > 0.0) & (discriminant >= 0.0)
+        safe_discriminant = torch.clamp(discriminant, min=0.0)
+        sqrt_discriminant = torch.sqrt(safe_discriminant)
+        root_1 = (-b + sqrt_discriminant) / (2.0 * a)
+        root_2 = (-b - sqrt_discriminant) / (2.0 * a)
+        ray_scale = torch.where(root_1 > 0.0, root_1, root_2)
+        scale = torch.where(
+            valid & (ray_scale > 0.0),
+            1.0 / ray_scale,
+            torch.full_like(ray_scale, float("nan")),
+        )
+        return scale
 
     def _build_payload(
         self, step: int, image_results: List[Dict], all_ratios: List[float]
@@ -390,11 +445,14 @@ class DistancesComputer:
             "num_matched_directions": int(all_ratios_np.size),
             "distances_path": self.distances_path,
             "matching": {
-                "angle_offset_deg": self.angle_offset_deg,
-                "angle_sign": -1 if self.angle_sign < 0 else 1,
+                "pivot_deg": self.pivot_deg,
                 "angle_tolerance_deg": self.angle_tolerance_deg,
-                "vertical_angle_deg": self.vertical_angle_deg,
-                "vertical_tolerance_deg": self.vertical_tolerance_deg,
+                "line_tolerance_deg": self.line_tolerance_deg,
+                "min_splat_matched_per_image": self.min_splat_matched_per_image,
+                "offset_x_m": self.offset_x_m,
+                "offset_y_m": self.offset_y_m,
+                "offset_z_m": self.offset_z_m,
+                "angle_offset_deg": self.angle_offset_deg,
             },
             "images": image_results,
         }
