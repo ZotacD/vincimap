@@ -18,7 +18,6 @@ fused_bilagrid @ git+https://github.com/harry7557558/fused-bilagrid@49f0ef06c9f8
 fused_ssim @ git+https://github.com/rahul-goel/fused-ssim@328dc9836f513d00c4b5bc38fe30478b4435cbb5
 future==1.0.0
 grpcio==1.78.0
-gsplat==1.5.3+pt24cu124
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1

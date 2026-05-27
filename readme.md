@@ -37,11 +37,12 @@ python -m pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index
 Dépendances complémentaires :
 
 ```bash
-python -m install ninja numpy jaxtyping rich
+python -m pip install ninja numpy jaxtyping rich
 ```
 
 ```bash
-python -m install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
+python -m pip install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
+
 ```
 
 ```bash
