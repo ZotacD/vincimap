@@ -398,7 +398,7 @@ def action_run_colmap(args: argparse.Namespace) -> None:
         {
             "image_path": project_relative_path(images_path),
             "input_path": project_relative_path(merged),
-            "output_path": project_relative_path(data_path / "dense"),
+            "output_path": project_relative_path(merged),
         },
     )
     colmap_utils.image_undistorter(image_undistorter_config_path, colmap_path=colmap_path)
