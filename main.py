@@ -20,7 +20,14 @@ def load_args() -> argparse.Namespace:
         "--action",
         type=str,
         required=True,
-        choices=["create_workspace", "run_colmap", "run_gaussian_training"],
+        choices=[
+            "create_workspace",
+            "delete_workspace",
+            "reset_colmap",
+            "run_colmap",
+            "reset_gaussian_training",
+            "run_gaussian_training",
+        ],
         help="Action to run.",
     )
     parser.add_argument(
@@ -354,6 +361,74 @@ def action_create_workspace(args: argparse.Namespace) -> None:
         fov=workspace.as_float("video_fov"),
     )
 
+def action_delete_workspace(args: argparse.Namespace) -> None:
+    workspace_path = full_path(args.workspace_path)
+    workspaces_path = full_path(Path("workspaces"))
+
+    # Supprime uniquement un workspace place dans le dossier workspaces du projet.
+    try:
+        workspace_path.relative_to(workspaces_path)
+    except ValueError as exc:
+        raise ValueError(
+            f"Refusing to delete workspace outside workspaces folder : {workspace_path}"
+        ) from exc
+
+    if workspace_path == workspaces_path:
+        raise ValueError(f"Refusing to delete workspaces folder : {workspace_path}")
+
+    if workspace_path.exists():
+        shutil.rmtree(workspace_path)
+
+def action_reset_gaussian_training(args: argparse.Namespace) -> None:
+    workspace_path = full_path(args.workspace_path)
+    trainer = section(workspace_path / "configs" / "trainer.ini", "trainer")
+    result_dir = trainer.get("result_dir", "").strip()
+    if result_dir:
+        # Supprime les sorties d'entrainement pour repartir sur un dossier resultat propre.
+        result_path = full_path(config_path_value(result_dir))
+        # Garde la suppression limitee aux fichiers generes dans ce workspace.
+        try:
+            result_path.relative_to(workspace_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"Refusing to delete path outside workspace : {result_path}"
+            ) from exc
+
+        if result_path.is_dir():
+            shutil.rmtree(result_path)
+        elif result_path.exists():
+            result_path.unlink()
+
+
+def action_reset_colmap(args: argparse.Namespace) -> None:
+    workspace_path = full_path(args.workspace_path)
+    data_path, _, sparse_path, _ = paths(workspace_path)
+
+    database_path = data_path / "database.db"
+    # Supprime les sorties COLMAP pour pouvoir relancer l'action sur le meme workspace.
+    colmap_output_paths = [
+        *data_path.glob(f"{database_path.name}*"),
+        sparse_path,
+        data_path / "dense",
+    ]
+    for path in colmap_output_paths:
+        resolved_path = full_path(path)
+        # Garde la suppression limitee aux fichiers generes dans ce workspace.
+        try:
+            resolved_path.relative_to(workspace_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"Refusing to delete path outside workspace : {resolved_path}"
+            ) from exc
+
+        if resolved_path.is_dir():
+            shutil.rmtree(resolved_path)
+        elif resolved_path.exists():
+            resolved_path.unlink()
+
+    action_reset_gaussian_training(args)
+
+
 def action_run_colmap(args: argparse.Namespace) -> None:
     workspace_path = full_path(args.workspace_path)
     data_path, images_path, sparse_path, configs_path = paths(workspace_path)
@@ -367,6 +442,9 @@ def action_run_colmap(args: argparse.Namespace) -> None:
         )
 
     database_path = data_path / "database.db"
+    action_reset_colmap(args)
+    sparse_path.mkdir(parents=True, exist_ok=True)
+
     colmap_utils.database_creator(database_path, colmap_path=colmap_path)
 
     colmap_utils.feature_extractor(colmap_configs_path / "feature_extractor.ini", colmap_path=colmap_path)
@@ -374,6 +452,9 @@ def action_run_colmap(args: argparse.Namespace) -> None:
     colmap_utils.mapper(colmap_configs_path / "mapper.ini", colmap_path=colmap_path)
 
     submodels = sorted(path for path in sparse_path.iterdir() if path.is_dir() and path.name.isdigit())
+    if not submodels:
+        raise FileNotFoundError(f"No sparse submodels found in : {sparse_path}")
+
     merged = submodels[0]
     for submodel in submodels[1:]:
         colmap_utils.model_merger(str(merged), str(submodel), str(merged), colmap_path=colmap_path)
@@ -482,6 +563,7 @@ def action_run_gaussian_training(args: argparse.Namespace) -> None:
         )
 
     workspace_path = full_path(args.workspace_path)
+    action_reset_gaussian_training(args)
     simple_trainer.run_cli_args(
         training_args(workspace_path),
         strategy_options=trainer_strategy_options(workspace_path),
@@ -493,7 +575,10 @@ def main() -> None:
     
     actions = {
         "create_workspace": action_create_workspace,
+        "delete_workspace": action_delete_workspace,
+        "reset_colmap": action_reset_colmap,
         "run_colmap": action_run_colmap,
+        "reset_gaussian_training": action_reset_gaussian_training,
         "run_gaussian_training": action_run_gaussian_training,
     }
     actions[args.action](args)
