@@ -74,11 +74,8 @@ tensorboard==2.20.0
 tensorboard-data-server==0.7.2
 tensorly==0.9.0
 threadpoolctl==3.6.0
-torch==2.4.1+cu124
 torch_fidelity==0.4.0
-torchaudio==2.4.1+cu124
 torchmetrics==1.9.0
-torchvision==0.19.1+cu124
 tqdm==4.67.3
 trimesh==4.11.3
 typeguard==4.5.1

@@ -41,7 +41,7 @@ python -m pip install ninja numpy jaxtyping rich
 ```
 
 ```bash
-python -m pip install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
+python -m pip install gsplat==1.5.3 --index-url https://docs.gsplat.studio/whl/pt24cu124
 
 ```
 
