@@ -31,7 +31,7 @@ venv/scripts/activate
 PyTorch doit être préinstallé pour installer les dépendances complémentaires :
 
 ```bash
-python -m pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+python -m pip install torch==2.4.1+cu124 torchvision==0.19.1+cu124 torchaudio==2.4.1+cu124 --index-url https://download.pytorch.org/whl/cu124
 ```
 
 Dépendances complémentaires :
@@ -41,7 +41,7 @@ python -m pip install ninja numpy jaxtyping rich
 ```
 
 ```bash
-python -m pip install gsplat==1.5.3 --index-url https://docs.gsplat.studio/whl/pt24cu124
+python -m pip install gsplat==1.5.3+pt24cu124 --index-url https://docs.gsplat.studio/whl/pt24cu124
 
 ```
 
