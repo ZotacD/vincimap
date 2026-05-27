@@ -11,7 +11,7 @@
 # 4. Pour chaque image, transformer les centres des splats du repere monde vers le repere camera.
 # 5. Projeter les splats dans l'image et garder seulement ceux visibles dans le cadre.
 # 6. Calculer, pour chaque splat visible, sa distance camera et ses angles horizontal/vertical.
-# 7. Aligner les angles mesures avec la convention camera via signe et offset configurables.
+# 7. Aligner les angles mesures avec la convention camera via offset configurable.
 # 8. Associer chaque direction mesuree aux splats proches selon les tolerances angulaires.
 # 9. Garder, pour chaque direction mesuree, le splat candidat le plus proche.
 # 10. Calculer le ratio distance_gsplat / distance_mesuree_m pour obtenir un scale gsplat/m.
@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Tuple
 
 from configobj import ConfigObj
 import numpy as np
+from PIL import Image, ImageDraw
 import torch
 from torch import Tensor
 
@@ -105,6 +106,13 @@ class DistancesComputer:
         config_path = Path(data_dir).parent / "configs" / "distances_computer.ini"
         config = ConfigObj(str(config_path), encoding="utf-8", list_values=False, write_empty_values=True)
         distances_config = config["distances_computer"]
+        workspace_config = ConfigObj(
+            str(config_path.parent / "workspace.ini"),
+            encoding="utf-8",
+            list_values=False,
+            write_empty_values=True,
+        )
+        workspace = workspace_config["workspace"] if "workspace" in workspace_config else {}
 
         distances_path = distances_config.get("distances_path", "").strip()
         if not distances_path:
@@ -120,12 +128,14 @@ class DistancesComputer:
         return cls(
             enabled=distances_config.as_bool("enabled") if "enabled" in distances_config else True,
             distances_path=distances_path,
+            data_dir=data_dir,
             result_dir=result_dir,
             stats_dir=stats_dir,
             world_rank=world_rank,
             splats=splats,
             parser=parser,
             near_plane=near_plane,
+            video_fov_deg=workspace.as_float("video_fov") if "video_fov" in workspace else 180.0,
             pivot_deg=distances_config.as_float("pivot_deg") if "pivot_deg" in distances_config else 0.0,
             angle_tolerance_deg=distances_config.as_float("angle_tolerance_deg") if "angle_tolerance_deg" in distances_config else 1.0,
             line_tolerance_deg=distances_config.as_float("line_tolerance_deg") if "line_tolerance_deg" in distances_config else 2.0,
@@ -141,12 +151,14 @@ class DistancesComputer:
         *,
         enabled: bool,
         distances_path: str,
+        data_dir: str,
         result_dir: str,
         stats_dir: str,
         world_rank: int,
         splats: torch.nn.ParameterDict,
         parser,
         near_plane: float,
+        video_fov_deg: float,
         pivot_deg: float,
         angle_tolerance_deg: float,
         line_tolerance_deg: float,
@@ -158,12 +170,14 @@ class DistancesComputer:
     ) -> None:
         self.enabled = enabled
         self.distances_path = distances_path
+        self.data_dir = data_dir
         self.result_dir = result_dir
         self.stats_dir = stats_dir
         self.world_rank = world_rank
         self.splats = splats
         self.parser = parser
         self.near_plane = near_plane
+        self.video_fov_deg = video_fov_deg
         self.pivot_deg = pivot_deg
         self.angle_tolerance_deg = angle_tolerance_deg
         self.line_tolerance_deg = line_tolerance_deg
@@ -191,10 +205,13 @@ class DistancesComputer:
             raise ValueError("angle_tolerance_deg must be > 0.")
         if self.line_tolerance_deg <= 0.0:
             raise ValueError("line_tolerance_deg must be > 0.")
+        if self.video_fov_deg <= 0.0:
+            raise ValueError("video_fov must be > 0.")
 
         print(f"[Distance scale] Computing gsplat/meter scale from {self.distances_path}")
 
         # Charge les mesures et prepare les centres des splats en coordonnees homogenes.
+        self.current_step = step
         measurements_by_image = _load_distance_measurements(self.distances_path)
         means = self.splats["means"].detach()
         ones = torch.ones((means.shape[0], 1), device=means.device, dtype=means.dtype)
@@ -261,6 +278,13 @@ class DistancesComputer:
             if image_result is None:
                 continue
 
+            projected_line = self._projected_line_for_image(image_index)
+            image_result["projected_line"] = projected_line
+            preview_path = self._write_projected_line_preview(
+                image_index, image_name, projected_line
+            )
+            if preview_path is not None:
+                image_result["projected_line_preview_path"] = preview_path
             all_ratios.extend(float(value) for value in ratios)
             image_results.append(image_result)
 
@@ -290,6 +314,291 @@ class DistancesComputer:
         if not torch.any(visible):
             return None
         return points_cam[visible]
+
+    def _projected_line_for_image(self, image_index: int) -> Dict:
+        camera_id = self.parser.camera_ids[image_index]
+        K_np = self.parser.Ks_dict[camera_id]
+        width, height = self.parser.imsize_dict[camera_id]
+        fx, fy = float(K_np[0, 0]), float(K_np[1, 1])
+        cx, cy = float(K_np[0, 2]), float(K_np[1, 2])
+        reference_fov_deg = self._camera_horizontal_fov(width, cx, fx)
+
+        center_points = self._project_scan_line_points(
+            fx,
+            fy,
+            cx,
+            cy,
+            width,
+            height,
+            fixed_angle_deg=0.0,
+            reference_fov_deg=reference_fov_deg,
+        )
+        lower_points = self._project_scan_line_points(
+            fx,
+            fy,
+            cx,
+            cy,
+            width,
+            height,
+            fixed_angle_deg=-self.line_tolerance_deg,
+            reference_fov_deg=reference_fov_deg,
+        )
+        upper_points = self._project_scan_line_points(
+            fx,
+            fy,
+            cx,
+            cy,
+            width,
+            height,
+            fixed_angle_deg=self.line_tolerance_deg,
+            reference_fov_deg=reference_fov_deg,
+        )
+        degree_scale = self._project_degree_scale(
+            width, height, fx, fy, cx, cy, reference_fov_deg
+        )
+
+        return {
+            "points": center_points,
+            "tolerance_lines": {
+                "negative": lower_points,
+                "positive": upper_points,
+            },
+            "center": {
+                "x": cx,
+                "y": cy,
+            },
+            "line_tolerance_deg": self.line_tolerance_deg,
+            "video_fov_deg": self.video_fov_deg,
+            "reference_fov_deg": reference_fov_deg,
+            "degree_scale": degree_scale,
+        }
+
+    @staticmethod
+    def _camera_horizontal_fov(width: int, cx: float, fx: float) -> float:
+        half_width = min(cx, float(width) - cx)
+        return math.degrees(2.0 * math.atan(half_width / fx))
+
+    def _project_scan_line_points(
+        self,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        width: int,
+        height: int,
+        *,
+        fixed_angle_deg: float,
+        reference_fov_deg: float,
+    ) -> List[Dict]:
+        pivot = math.radians(self.pivot_deg)
+        scan_angles_deg = np.linspace(-89.0, 89.0, 2001, dtype=np.float64)
+        horizontal_deg = (
+            scan_angles_deg * math.cos(pivot) - fixed_angle_deg * math.sin(pivot)
+        )
+        vertical_deg = (
+            scan_angles_deg * math.sin(pivot) + fixed_angle_deg * math.cos(pivot)
+        )
+        horizontal_angles = np.deg2rad(horizontal_deg)
+        vertical_angles = np.deg2rad(vertical_deg)
+
+        x = np.tan(horizontal_angles)
+        y = np.tan(vertical_angles) * np.sqrt((x * x) + 1.0)
+        projected_x = (fx * x) + cx
+        projected_y = (fy * y) + cy
+
+        inside = (
+            (projected_x >= 0.0)
+            & (projected_x < width)
+            & (projected_y >= 0.0)
+            & (projected_y < height)
+        )
+        indices = np.flatnonzero(inside)
+        if indices.size < 2:
+            return []
+
+        p0 = np.asarray([projected_x[indices[0]], projected_y[indices[0]]])
+        p1 = np.asarray([projected_x[indices[-1]], projected_y[indices[-1]]])
+        center = self._project_scan_line_center(fx, fy, cx, cy, fixed_angle_deg)
+        direction = p1 - p0
+        length = float(np.linalg.norm(direction))
+        if length == 0.0:
+            return []
+
+        direction = direction / length
+        half_length = min(
+            float(np.linalg.norm(center - p0)),
+            float(np.linalg.norm(center - p1)),
+        )
+        fov_ratio = min(self.video_fov_deg / reference_fov_deg, 1.0)
+        half_length *= fov_ratio
+        cropped_p0 = center - direction * half_length
+        cropped_p1 = center + direction * half_length
+
+        return [
+            {
+                "x": float(cropped_p0[0]),
+                "y": float(cropped_p0[1]),
+            },
+            {
+                "x": float(cropped_p1[0]),
+                "y": float(cropped_p1[1]),
+            },
+        ]
+
+    def _project_scan_line_center(
+        self, fx: float, fy: float, cx: float, cy: float, fixed_angle_deg: float
+    ) -> np.ndarray:
+        pivot = math.radians(self.pivot_deg)
+        horizontal_deg = -fixed_angle_deg * math.sin(pivot)
+        vertical_deg = fixed_angle_deg * math.cos(pivot)
+        horizontal_angle = math.radians(horizontal_deg)
+        vertical_angle = math.radians(vertical_deg)
+        x = math.tan(horizontal_angle)
+        y = math.tan(vertical_angle) * math.sqrt((x * x) + 1.0)
+        return np.asarray([(fx * x) + cx, (fy * y) + cy], dtype=np.float64)
+
+    def _project_degree_scale(
+        self,
+        width: int,
+        height: int,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        reference_fov_deg: float,
+    ) -> Dict:
+        vertical_reference_fov_deg = self._camera_vertical_fov(height, cy, fy)
+        fov_ratio = min(self.video_fov_deg / reference_fov_deg, 1.0)
+        horizontal_limit_deg = min(self.video_fov_deg, reference_fov_deg) * 0.5
+        vertical_limit_deg = vertical_reference_fov_deg * fov_ratio * 0.5
+
+        x_ticks = []
+        for angle_deg in self._degree_tick_values(horizontal_limit_deg):
+            x = (fx * math.tan(math.radians(angle_deg))) + cx
+            if 0.0 <= x < width:
+                x_ticks.append({"degree": angle_deg, "x": float(x)})
+
+        y_ticks = []
+        for angle_deg in self._degree_tick_values(vertical_limit_deg):
+            y = (fy * math.tan(math.radians(angle_deg))) + cy
+            if 0.0 <= y < height:
+                y_ticks.append({"degree": angle_deg, "y": float(y)})
+
+        return {
+            "x": x_ticks,
+            "y": y_ticks,
+            "horizontal_limit_deg": horizontal_limit_deg,
+            "vertical_limit_deg": vertical_limit_deg,
+        }
+
+    @staticmethod
+    def _camera_vertical_fov(height: int, cy: float, fy: float) -> float:
+        half_height = min(cy, float(height) - cy)
+        return math.degrees(2.0 * math.atan(half_height / fy))
+
+    @staticmethod
+    def _degree_tick_values(limit_deg: float) -> List[float]:
+        if limit_deg <= 0.0:
+            return [0.0]
+        step = 5.0 if limit_deg <= 30.0 else 10.0
+        start = math.ceil(-limit_deg / step) * step
+        end = math.floor(limit_deg / step) * step
+        values = []
+        current = start
+        while current <= end + 1e-6:
+            values.append(0.0 if abs(current) < 1e-6 else current)
+            current += step
+        return values
+
+    def _write_projected_line_preview(
+        self, image_index: int, image_name: str, projected_line: Dict
+    ) -> Optional[str]:
+        image_path = Path(self.data_dir) / "images" / os.path.basename(image_name)
+        if not image_path.exists():
+            return None
+
+        try:
+            image = Image.open(image_path).convert("RGB")
+        except OSError:
+            return None
+        draw = ImageDraw.Draw(image)
+
+        for points in projected_line.get("tolerance_lines", {}).values():
+            self._draw_projected_line(draw, points, color=(255, 255, 0), thickness=2)
+        self._draw_projected_line(
+            draw, projected_line.get("points", []), color=(255, 0, 0), thickness=3
+        )
+        self._draw_degree_scale(draw, image.size, projected_line.get("degree_scale"))
+
+        center = projected_line.get("center")
+        if center:
+            x, y = int(round(center["x"])), int(round(center["y"]))
+            draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=(255, 255, 255))
+            draw.ellipse((x - 6, y - 6, x + 6, y + 6), outline=(0, 0, 0), width=1)
+
+        output_dir = (
+            Path(self.result_dir)
+            / "distance_projected_lines"
+            / f"step_{self.current_step:04d}"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / os.path.basename(image_name)
+        image.save(output_path, quality=95)
+        return str(output_path)
+
+    @staticmethod
+    def _draw_projected_line(
+        draw: ImageDraw.ImageDraw,
+        points: List[Dict],
+        *,
+        color: Tuple[int, int, int],
+        thickness: int,
+    ) -> None:
+        if len(points) != 2:
+            return
+        p0 = (int(round(points[0]["x"])), int(round(points[0]["y"])))
+        p1 = (int(round(points[1]["x"])), int(round(points[1]["y"])))
+        draw.line((p0, p1), fill=color, width=thickness)
+
+    @staticmethod
+    def _draw_degree_scale(
+        draw: ImageDraw.ImageDraw, image_size: Tuple[int, int], degree_scale: Optional[Dict]
+    ) -> None:
+        if not degree_scale:
+            return
+
+        width, height = image_size
+        x_axis_y = height - 34
+        y_axis_x = 34
+        color = (30, 30, 30)
+        label_color = (255, 255, 255)
+        label_bg = (0, 0, 0)
+
+        draw.line((0, x_axis_y, width, x_axis_y), fill=color, width=1)
+        for tick in degree_scale.get("x", []):
+            x = int(round(tick["x"]))
+            degree = int(round(tick["degree"]))
+            draw.line((x, x_axis_y - 8, x, x_axis_y + 8), fill=color, width=2)
+            label = f"{degree:+d}deg"
+            label_pos = (x - 18, x_axis_y + 10)
+            draw.rectangle(
+                (label_pos[0] - 2, label_pos[1] - 1, label_pos[0] + 40, label_pos[1] + 12),
+                fill=label_bg,
+            )
+            draw.text(label_pos, label, fill=label_color)
+
+        draw.line((y_axis_x, 0, y_axis_x, height), fill=color, width=1)
+        for tick in degree_scale.get("y", []):
+            y = int(round(tick["y"]))
+            degree = int(round(tick["degree"]))
+            draw.line((y_axis_x - 8, y, y_axis_x + 8, y), fill=color, width=2)
+            label = f"{degree:+d}deg"
+            label_pos = (y_axis_x + 12, y - 6)
+            draw.rectangle(
+                (label_pos[0] - 2, label_pos[1] - 1, label_pos[0] + 40, label_pos[1] + 12),
+                fill=label_bg,
+            )
+            draw.text(label_pos, label, fill=label_color)
 
     def _match_image_measurements(
         self,
@@ -448,6 +757,7 @@ class DistancesComputer:
                 "pivot_deg": self.pivot_deg,
                 "angle_tolerance_deg": self.angle_tolerance_deg,
                 "line_tolerance_deg": self.line_tolerance_deg,
+                "video_fov_deg": self.video_fov_deg,
                 "min_splat_matched_per_image": self.min_splat_matched_per_image,
                 "offset_x_m": self.offset_x_m,
                 "offset_y_m": self.offset_y_m,

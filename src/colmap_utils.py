@@ -247,11 +247,45 @@ def bundle_adjuster(
 
 
 """
-Reconstruit automatiquement une scène 3D
-dans l'espace de travail accessible via ``workspace_path``
-à partir des images accessibles via ``images_path``.
+Undistort les images pour preparer un workspace dense COLMAP.
 
-Crée le dossier ``workspace_path`` s'il n'existe pas.
+Utilise le projet COLMAP accessible via ``project_path``.
+"""
+def image_undistorter(
+    project_path: str,
+    colmap_path: str = "colmap",
+) -> None:
+    project_file = Path(project_path)
+
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Project file not found : {project_file}")
+
+    try:
+        subprocess.run(
+            [
+                colmap_path,
+                "image_undistorter",
+                "--project_path",
+                str(project_file),
+            ],
+            cwd=_project_cwd(project_file),
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(
+            "COLMAP error during image undistortion :\n"
+            f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
+        )
+        raise
+
+
+"""
+Reconstruit automatiquement une scene 3D
+dans l'espace de travail accessible via ``workspace_path``
+a partir des images accessibles via ``images_path``.
+
+Cree le dossier ``workspace_path`` s'il n'existe pas.
 """
 def automatic_reconstructor(
     workspace_path: str,
