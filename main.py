@@ -23,6 +23,7 @@ def load_args() -> argparse.Namespace:
         choices=[
             "create_workspace",
             "delete_workspace",
+            "reset_workspace",
             "reset_colmap",
             "run_colmap",
             "reset_gaussian_training",
@@ -379,6 +380,19 @@ def action_delete_workspace(args: argparse.Namespace) -> None:
     if workspace_path.exists():
         shutil.rmtree(workspace_path)
 
+def action_reset_workspace(args: argparse.Namespace) -> None:
+    workspace_path = full_path(args.workspace_path)
+    workspace = workspace_section(workspace_path)
+
+    # Regenere les configs du workspace depuis les templates du projet.
+    create_workspace_configs(
+        workspace_path,
+        video_path=config_path_value(workspace["video_path"]),
+        distances_path=config_path_value(workspace["distances_path"]),
+        colmap_path=executable_from_config(workspace["colmap_path"]),
+    )
+    action_reset_colmap(args)
+
 def action_reset_gaussian_training(args: argparse.Namespace) -> None:
     workspace_path = full_path(args.workspace_path)
     trainer = section(workspace_path / "configs" / "trainer.ini", "trainer")
@@ -576,6 +590,7 @@ def main() -> None:
     actions = {
         "create_workspace": action_create_workspace,
         "delete_workspace": action_delete_workspace,
+        "reset_workspace": action_reset_workspace,
         "reset_colmap": action_reset_colmap,
         "run_colmap": action_run_colmap,
         "reset_gaussian_training": action_reset_gaussian_training,
