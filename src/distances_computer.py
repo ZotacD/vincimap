@@ -607,18 +607,7 @@ class DistancesComputer:
         measured_angles_np: np.ndarray,
         measured_distances_m_np: np.ndarray,
     ) -> Tuple[Optional[Dict], np.ndarray]:
-        # Calcule distances et angles depuis le centre camera.
         gs_distances = torch.linalg.norm(visible_points_cam, dim=-1)
-        horizontal_angles = torch.rad2deg(
-            torch.atan2(visible_points_cam[:, 0], visible_points_cam[:, 2])
-        )
-        vertical_angles = torch.rad2deg(
-            torch.atan2(
-                visible_points_cam[:, 1],
-                torch.linalg.norm(visible_points_cam[:, [0, 2]], dim=-1),
-            )
-        )
-
         # Convertit les mesures en tenseurs sur le meme device que les splats.
         measured_angles = torch.from_numpy(measured_angles_np).to(
             device=visible_points_cam.device, dtype=visible_points_cam.dtype
@@ -635,38 +624,68 @@ class DistancesComputer:
         scan_weight = math.cos(pivot)
         vertical_scan_weight = math.sin(pivot)
 
-        splat_scan_angles = (
-            horizontal_angles * scan_weight + vertical_angles * vertical_scan_weight
-        )
-        splat_fixed_angles = (
-            -horizontal_angles * vertical_scan_weight + vertical_angles * scan_weight
-        )
         measured_scan_angles = measured_angles_camera
         measured_fixed_angle = 0.0
 
-        # Calcule les ecarts angulaires entre chaque splat visible et chaque direction mesuree.
-        scan_diff = torch.abs(
-            _wrap_degrees_tensor(
-                splat_scan_angles[:, None] - measured_scan_angles[None, :]
+        offset = self._distance_offset(
+            device=visible_points_cam.device, dtype=visible_points_cam.dtype
+        )
+        if torch.all(offset == 0.0):
+            # Sans offset, les directions mesurees partent du centre optique camera.
+            horizontal_angles, vertical_angles = self._camera_angles(visible_points_cam)
+            splat_scan_angles, splat_fixed_angles = self._scan_angles(
+                horizontal_angles, vertical_angles, scan_weight, vertical_scan_weight
             )
-        )
-        fixed_diff = torch.abs(
-            _wrap_degrees_tensor(splat_fixed_angles - measured_fixed_angle)
-        )
-        candidates = (
-            (scan_diff <= self.angle_tolerance_deg)
-            & (fixed_diff[:, None] <= self.line_tolerance_deg)
-        )
+            scan_diff = torch.abs(
+                _wrap_degrees_tensor(
+                    splat_scan_angles[:, None] - measured_scan_angles[None, :]
+                )
+            )
+            fixed_diff = torch.abs(
+                _wrap_degrees_tensor(splat_fixed_angles - measured_fixed_angle)
+            )
+            candidates = (
+                (scan_diff <= self.angle_tolerance_deg)
+                & (fixed_diff[:, None] <= self.line_tolerance_deg)
+            )
+            candidate_scores = gs_distances[:, None]
+        else:
+            # Avec offset, l'angle mesure part du capteur decale. Comme le scale
+            # est inconnu, on resout la position metrique compatible avec chaque
+            # distance mesuree avant de comparer les directions.
+            ray_scales = self._ray_scales(
+                visible_points_cam, measured_distances_m, offset
+            )
+            sensor_x = ray_scales * visible_points_cam[:, 0, None] - offset[0]
+            sensor_y = ray_scales * visible_points_cam[:, 1, None] - offset[1]
+            sensor_z = ray_scales * visible_points_cam[:, 2, None] - offset[2]
+            horizontal_angles, vertical_angles = self._camera_angles_from_components(
+                sensor_x, sensor_y, sensor_z
+            )
+            splat_scan_angles, splat_fixed_angles = self._scan_angles(
+                horizontal_angles, vertical_angles, scan_weight, vertical_scan_weight
+            )
+            scan_diff = torch.abs(
+                _wrap_degrees_tensor(splat_scan_angles - measured_scan_angles[None, :])
+            )
+            fixed_diff = torch.abs(
+                _wrap_degrees_tensor(splat_fixed_angles - measured_fixed_angle)
+            )
+            candidates = (
+                torch.isfinite(ray_scales)
+                & (scan_diff <= self.angle_tolerance_deg)
+                & (fixed_diff <= self.line_tolerance_deg)
+            )
+            candidate_scores = ray_scales * gs_distances[:, None]
 
         # Pour chaque direction mesuree, garde le splat candidat le plus proche.
         inf = torch.full_like(scan_diff, float("inf"))
-        candidate_distances = torch.where(candidates, gs_distances[:, None], inf)
+        candidate_distances = torch.where(candidates, candidate_scores, inf)
         matched = candidate_distances.min(dim=0)
-        matched_distances = matched.values
         matched_indices = matched.indices
 
         # Elimine les directions sans match et les distances mesurees invalides.
-        valid = torch.isfinite(matched_distances) & (measured_distances_m > 0.0)
+        valid = torch.isfinite(matched.values) & (measured_distances_m > 0.0)
         if not torch.any(valid):
             return None, np.asarray([], dtype=np.float64)
 
@@ -679,7 +698,7 @@ class DistancesComputer:
 
         ratios = ratios_tensor[valid_ratios].cpu().numpy()
         measured_distances_valid = measured_distances_m[valid][valid_ratios].cpu().numpy()
-        gs_distances_valid = matched_distances[valid][valid_ratios].cpu().numpy()
+        gs_distances_valid = gs_distances[matched_indices[valid]][valid_ratios].cpu().numpy()
         matched_angles = measured_angles_np[valid.cpu().numpy()][
             valid_ratios.cpu().numpy()
         ]
@@ -704,15 +723,70 @@ class DistancesComputer:
             ratios,
         )
 
-    def _scale_ratios(self, points_cam: Tensor, measured_distances_m: Tensor) -> Tensor:
-        offset = torch.tensor(
+    def _distance_offset(self, *, device: torch.device, dtype: torch.dtype) -> Tensor:
+        return torch.tensor(
             [self.offset_x_m, self.offset_y_m, self.offset_z_m],
-            device=points_cam.device,
-            dtype=points_cam.dtype,
+            device=device,
+            dtype=dtype,
         )
-        if torch.all(offset == 0.0):
-            return torch.linalg.norm(points_cam, dim=-1) / measured_distances_m
 
+    @staticmethod
+    def _camera_angles(points_cam: Tensor) -> Tuple[Tensor, Tensor]:
+        return DistancesComputer._camera_angles_from_components(
+            points_cam[..., 0], points_cam[..., 1], points_cam[..., 2]
+        )
+
+    @staticmethod
+    def _camera_angles_from_components(
+        x: Tensor, y: Tensor, z: Tensor
+    ) -> Tuple[Tensor, Tensor]:
+        horizontal_angles = torch.rad2deg(torch.atan2(x, z))
+        vertical_angles = torch.rad2deg(torch.atan2(y, torch.sqrt(x * x + z * z)))
+        return horizontal_angles, vertical_angles
+
+    @staticmethod
+    def _scan_angles(
+        horizontal_angles: Tensor,
+        vertical_angles: Tensor,
+        scan_weight: float,
+        vertical_scan_weight: float,
+    ) -> Tuple[Tensor, Tensor]:
+        scan_angles = (
+            horizontal_angles * scan_weight + vertical_angles * vertical_scan_weight
+        )
+        fixed_angles = (
+            -horizontal_angles * vertical_scan_weight + vertical_angles * scan_weight
+        )
+        return scan_angles, fixed_angles
+
+    @staticmethod
+    def _ray_scales(
+        points_cam: Tensor,
+        measured_distances_m: Tensor,
+        offset: Tensor,
+    ) -> Tensor:
+        a = torch.sum(points_cam * points_cam, dim=-1)
+        b = -2.0 * torch.sum(points_cam * offset[None, :], dim=-1)
+        c = torch.sum(offset * offset) - measured_distances_m * measured_distances_m
+        discriminant = b[:, None] * b[:, None] - 4.0 * a[:, None] * c[None, :]
+        valid = (a[:, None] > 0.0) & (discriminant >= 0.0)
+        safe_discriminant = torch.clamp(discriminant, min=0.0)
+        sqrt_discriminant = torch.sqrt(safe_discriminant)
+        root_1 = (-b[:, None] + sqrt_discriminant) / (2.0 * a[:, None])
+        root_2 = (-b[:, None] - sqrt_discriminant) / (2.0 * a[:, None])
+        ray_scale = torch.where(root_1 > 0.0, root_1, root_2)
+        return torch.where(
+            valid & (ray_scale > 0.0),
+            ray_scale,
+            torch.full_like(ray_scale, float("nan")),
+        )
+
+    @staticmethod
+    def _ray_scales_for_pairs(
+        points_cam: Tensor,
+        measured_distances_m: Tensor,
+        offset: Tensor,
+    ) -> Tensor:
         a = torch.sum(points_cam * points_cam, dim=-1)
         b = -2.0 * torch.sum(points_cam * offset[None, :], dim=-1)
         c = torch.sum(offset * offset) - measured_distances_m * measured_distances_m
@@ -723,12 +797,25 @@ class DistancesComputer:
         root_1 = (-b + sqrt_discriminant) / (2.0 * a)
         root_2 = (-b - sqrt_discriminant) / (2.0 * a)
         ray_scale = torch.where(root_1 > 0.0, root_1, root_2)
-        scale = torch.where(
+        return torch.where(
             valid & (ray_scale > 0.0),
+            ray_scale,
+            torch.full_like(ray_scale, float("nan")),
+        )
+
+    def _scale_ratios(self, points_cam: Tensor, measured_distances_m: Tensor) -> Tensor:
+        offset = self._distance_offset(device=points_cam.device, dtype=points_cam.dtype)
+        if torch.all(offset == 0.0):
+            return torch.linalg.norm(points_cam, dim=-1) / measured_distances_m
+
+        ray_scale = self._ray_scales_for_pairs(
+            points_cam, measured_distances_m, offset
+        )
+        return torch.where(
+            torch.isfinite(ray_scale),
             1.0 / ray_scale,
             torch.full_like(ray_scale, float("nan")),
         )
-        return scale
 
     def _build_payload(
         self, step: int, image_results: List[Dict], all_ratios: List[float]

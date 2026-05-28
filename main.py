@@ -145,6 +145,14 @@ def write_config(
     cfg.write()
 
 
+def update_config(
+    config_path: Path,
+    values: dict[str, object],
+    section_name: str | None = None,
+) -> None:
+    write_config(config_path, config_path, values, section_name)
+
+
 def create_workspace_configs(
     workspace_path: Path,
     video_path: str,
@@ -238,8 +246,12 @@ def create_workspace_configs(
     return configs_path
 
 
+def normalized_angle(angle: float) -> float:
+    return (angle + 180.0) % 360.0 - 180.0
+
+
 def angle_in_fov(angle: float, fov: float) -> bool:
-    return fov >= 360.0 or abs((angle + 180.0) % 360.0 - 180.0) <= fov / 2.0
+    return fov >= 360.0 or abs(normalized_angle(angle)) <= fov / 2.0
 
 
 def find_column(header: list[str], name: str) -> int:
@@ -278,6 +290,49 @@ def split_turns(rows: list[list[str]], angle_col: int) -> list[list[list[str]]]:
     return turns
 
 
+def fov_rows_by_upper_angle(
+    rows: list[list[str]],
+    angle_col: int,
+    fov: float,
+) -> list[list[str]]:
+    if fov >= 360.0:
+        return rows
+
+    half_fov = fov / 2.0
+    rows_by_angle: dict[float, list[list[str]]] = {}
+    for row in rows:
+        angle = normalized_angle(float(row[angle_col]))
+        if abs(angle) <= half_fov:
+            rows_by_angle.setdefault(angle, []).append(row)
+
+    available_angles = sorted(rows_by_angle)
+    if not available_angles:
+        return []
+
+    selected_angles = []
+    available_index = 0
+    target_start = math.ceil(-half_fov)
+    target_stop = math.floor(half_fov)
+
+    for target_angle in range(target_start, target_stop + 1):
+        while (
+            available_index < len(available_angles)
+            and available_angles[available_index] < target_angle
+        ):
+            available_index += 1
+        if available_index >= len(available_angles):
+            break
+
+        angle = available_angles[available_index]
+        if angle <= half_fov and (not selected_angles or angle != selected_angles[-1]):
+            selected_angles.append(angle)
+
+    selected_rows = []
+    for angle in selected_angles:
+        selected_rows.extend(rows_by_angle[angle])
+    return selected_rows
+
+
 def link_images_with_distances(
     distances_path: str,
     data_path: Path,
@@ -309,9 +364,8 @@ def link_images_with_distances(
         writer.writerow(["angle", "distance", "image_id"])
         for turn_index, turn in enumerate(turns[:image_count]):
             image_name = image_names[turn_index]
-            for row in turn:
-                if angle_in_fov(float(row[angle_col]), fov):
-                    writer.writerow([row[angle_col], row[distance_col], image_name])
+            for row in fov_rows_by_upper_angle(turn, angle_col, fov):
+                writer.writerow([row[angle_col], row[distance_col], image_name])
 
 
 def action_create_workspace(args: argparse.Namespace) -> None:
@@ -413,8 +467,7 @@ def action_prepare_workspace(args: argparse.Namespace) -> None:
         for x, y, width, height in black_box_percentages
     ]
     ffmpeg_utils.images_to_masks(images_path, masks_path, black_boxes=black_boxes)
-    write_config(
-        configs_path / "colmap" / "feature_extractor.ini",
+    update_config(
         configs_path / "colmap" / "feature_extractor.ini",
         {"mask_path": project_relative_path(masks_path)},
         "ImageReader",
@@ -464,8 +517,7 @@ def action_reset_workspace(args: argparse.Namespace) -> None:
         distances_path=source_distances_path,
         colmap_path=executable_from_config(workspace["colmap_path"]),
     )
-    write_config(
-        configs_path / "workspace.ini",
+    update_config(
         configs_path / "workspace.ini",
         {
             "video_frame_rate": fps,
@@ -560,8 +612,7 @@ def action_run_colmap(args: argparse.Namespace) -> None:
 
     for name in ["point_filtering", "bundle_adjuster"]:
         cfg_path = colmap_configs_path / f"{name}.ini"
-        write_config(
-            Path(f"configs/colmap/{name}.ini"),
+        update_config(
             cfg_path,
             {
                 "input_path": project_relative_path(merged),
@@ -571,8 +622,7 @@ def action_run_colmap(args: argparse.Namespace) -> None:
         getattr(colmap_utils, name)(cfg_path, colmap_path=colmap_path)
 
     image_undistorter_config_path = colmap_configs_path / "image_undistorter.ini"
-    write_config(
-        Path("configs/colmap/image_undistorter.ini"),
+    update_config(
         image_undistorter_config_path,
         {
             "image_path": project_relative_path(images_path),
