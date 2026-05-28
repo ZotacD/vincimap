@@ -2,6 +2,8 @@ import subprocess
 import ffmpeg
 from pathlib import Path
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
+
 """
 Vérifie si FFmpeg est installé
 et accessible depuis le système.
@@ -64,10 +66,9 @@ def images_to_scaled_images(images_path: str, scaled_images_path: str) -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    image_extensions = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
     input_images = sorted(
         p for p in input_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in image_extensions
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
     )
 
     if not input_images:
@@ -93,7 +94,98 @@ def images_to_scaled_images(images_path: str, scaled_images_path: str) -> None:
             raise
         
 """
-Retourne le frame rate de la vidéo
+Cree des masques COLMAP a partir des images accessibles via ``images_path``.
+
+Par defaut, chaque masque est entierement blanc. Les rectangles optionnels
+dans ``black_boxes`` sont remplis en noir pour exclure ces zones.
+
+COLMAP attend un fichier ``nom_image.ext.png`` pour l'image ``nom_image.ext``.
+"""
+def images_to_masks(
+    images_path: str,
+    masks_path: str,
+    black_boxes: list[tuple[int, int, int, int]] | None = None,
+) -> None:
+    input_dir = Path(images_path)
+    output_dir = Path(masks_path)
+
+    if not input_dir.is_dir():
+        raise FileNotFoundError(f"Images folder not found : {input_dir}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    input_images = sorted(
+        p for p in input_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+    )
+
+    if not input_images:
+        raise FileNotFoundError(f"No images found in : {input_dir}")
+
+    for input_image in input_images:
+        output_mask = output_dir / f"{input_image.name}.png"
+
+        try:
+            stream = (
+                ffmpeg
+                .input(str(input_image))
+                .filter("format", "gray")
+                .filter("lut", y=255)
+            )
+
+            for x, y, width, height in black_boxes or []:
+                stream = stream.filter(
+                    "drawbox",
+                    x=x,
+                    y=y,
+                    w=width,
+                    h=height,
+                    color="black",
+                    t="fill",
+                )
+
+            (
+                stream
+                .output(str(output_mask), vframes=1)
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+        except ffmpeg.Error as e:
+            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+            print(
+                f"FFmpeg error during mask creation {input_image.name} :\n{stderr}"
+            )
+            raise
+
+
+"""
+Retourne la taille d'une image sous la forme ``(width, height)``.
+"""
+def image_size(image_path: str) -> tuple[int, int]:
+    input_image = Path(image_path)
+
+    if not input_image.is_file():
+        raise FileNotFoundError(f"Image not found : {input_image}")
+
+    try:
+        probe = ffmpeg.probe(str(input_image))
+    except ffmpeg.Error as e:
+        print(f"FFmpeg error during image probing : {e}")
+        raise
+
+    image_stream = next(
+        (stream for stream in probe["streams"] if stream.get("codec_type") == "video"),
+        None,
+    )
+
+    if image_stream is None:
+        raise ValueError(f"No image stream found in : {input_image}")
+
+    return int(image_stream["width"]), int(image_stream["height"])
+
+
+"""
+Retourne le frame rate de la video
 accessible via ``video_path``.
 """
 def frame_rate_from_video(video_path: str) -> float:

@@ -3,6 +3,7 @@ import csv
 import dataclasses
 import math
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def load_args() -> argparse.Namespace:
             "create_workspace",
             "delete_workspace",
             "reset_workspace",
+            "prepare_workspace",
             "reset_colmap",
             "run_colmap",
             "reset_gaussian_training",
@@ -338,23 +340,87 @@ def action_create_workspace(args: argparse.Namespace) -> None:
         colmap_path=args.colmap_path,
     )
 
+    args.workspace_path = str(workspace_path)
+    action_prepare_workspace(args)
+
+def action_prepare_workspace(args: argparse.Namespace) -> None:
+    workspace_path = full_path(args.workspace_path)
     workspace = workspace_section(workspace_path)
+    data_path, images_path, _, configs_path = paths(workspace_path)
+    video_path = config_path_value(workspace["video_path"])
+    distances_path = config_path_value(workspace["distances_path"])
     trainer = section(configs_path / "trainer.ini", "trainer")
-    fps = min(math.ceil(ffmpeg_utils.frame_rate_from_video(video_path)), workspace.as_int("video_frame_rate"))
+    fps = workspace.as_int("video_frame_rate")
     duration = ffmpeg_utils.duration_from_video(video_path)
     data_factor = trainer.as_int("data_factor")
+    black_box_percentages = []
+    for black_box in re.split(r"[;|]", workspace.get("mask_black_boxes", "")):
+        black_box = black_box.strip()
+        if black_box and not black_box.startswith("#"):
+            values = [float(value.strip()) for value in black_box.split(",")]
+            if len(values) != 4:
+                raise ValueError(
+                    "mask_black_boxes must use percentage x,y,width,height blocks separated by '|'."
+                )
+            black_box_percentages.append(tuple(values))
 
-    write_config(
-        configs_path / "workspace.ini",
-        configs_path / "workspace.ini",
-        {"video_frame_rate": fps},
-        "workspace",
-    )
+    # Regenere les images avec le frame rate configure dans workspace.ini.
+    for path in [images_path, Path(f"{images_path}_{data_factor}")]:
+        try:
+            path.relative_to(workspace_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"Refusing to delete path outside workspace : {path}"
+            ) from exc
+        if path.exists():
+            shutil.rmtree(path)
+
     ffmpeg_utils.video_to_images(video_path, images_path, video_path.stem, fps)
     if data_factor > 1:
         ffmpeg_utils.images_to_scaled_images(images_path, Path(f"{images_path}_{data_factor}"))
+
+    masks_path = data_path / "masks"
+    # Regenere les masques COLMAP et evite de conserver d'anciens fichiers.
+    try:
+        masks_path.relative_to(workspace_path)
+    except ValueError as exc:
+        raise ValueError(
+            f"Refusing to delete path outside workspace : {masks_path}"
+        ) from exc
+    if masks_path.exists():
+        shutil.rmtree(masks_path)
+
+    first_image = next(
+        (
+            path for path in sorted(images_path.iterdir())
+            if path.is_file() and path.suffix.lower() in ffmpeg_utils.IMAGE_EXTENSIONS
+        ),
+        None,
+    )
+    if first_image is None:
+        raise FileNotFoundError(f"No images found in : {images_path}")
+
+    image_size = ffmpeg_utils.image_size(first_image)
+    image_width, image_height = image_size
+    black_boxes = [
+        (
+            round(x * image_width / 100),
+            round(y * image_height / 100),
+            round(width * image_width / 100),
+            round(height * image_height / 100),
+        )
+        for x, y, width, height in black_box_percentages
+    ]
+    ffmpeg_utils.images_to_masks(images_path, masks_path, black_boxes=black_boxes)
+    write_config(
+        configs_path / "colmap" / "feature_extractor.ini",
+        configs_path / "colmap" / "feature_extractor.ini",
+        {"mask_path": project_relative_path(masks_path)},
+        "ImageReader",
+    )
+
     link_images_with_distances(
-        distances_path=config_path_value(workspace["distances_path"]),
+        distances_path=distances_path,
         data_path=data_path,
         images_path=images_path,
         duration=duration,
@@ -383,14 +449,31 @@ def action_delete_workspace(args: argparse.Namespace) -> None:
 def action_reset_workspace(args: argparse.Namespace) -> None:
     workspace_path = full_path(args.workspace_path)
     workspace = workspace_section(workspace_path)
+    source_video_path = config_path_value(workspace["video_path"])
+    source_distances_path = config_path_value(workspace["distances_path"])
+    fps = workspace.as_int("video_frame_rate")
+    fov = workspace.as_float("video_fov")
+    mask_black_boxes = workspace.get("mask_black_boxes", "")
+    _, _, _, configs_path = paths(workspace_path)
 
-    # Regenere les configs du workspace depuis les templates du projet.
+    # Regenere les configs du workspace depuis les templates du projet et workspace.ini.
     create_workspace_configs(
         workspace_path,
-        video_path=config_path_value(workspace["video_path"]),
-        distances_path=config_path_value(workspace["distances_path"]),
+        video_path=source_video_path,
+        distances_path=source_distances_path,
         colmap_path=executable_from_config(workspace["colmap_path"]),
     )
+    write_config(
+        configs_path / "workspace.ini",
+        configs_path / "workspace.ini",
+        {
+            "video_frame_rate": fps,
+            "video_fov": fov,
+            "mask_black_boxes": mask_black_boxes,
+        },
+        "workspace",
+    )
+    action_prepare_workspace(args)
     action_reset_colmap(args)
 
 def action_reset_gaussian_training(args: argparse.Namespace) -> None:
@@ -591,6 +674,7 @@ def main() -> None:
         "create_workspace": action_create_workspace,
         "delete_workspace": action_delete_workspace,
         "reset_workspace": action_reset_workspace,
+        "prepare_workspace": action_prepare_workspace,
         "reset_colmap": action_reset_colmap,
         "run_colmap": action_run_colmap,
         "reset_gaussian_training": action_reset_gaussian_training,
