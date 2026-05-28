@@ -364,8 +364,9 @@ def action_prepare_workspace(args: argparse.Namespace) -> None:
                 )
             black_box_percentages.append(tuple(values))
 
-    # Regenere les images avec le frame rate configure dans workspace.ini.
-    for path in [images_path, Path(f"{images_path}_{data_factor}")]:
+    # Regenere les images et supprime les anciennes versions downscalees.
+    image_output_paths = [images_path, *data_path.glob(f"{images_path.name}_*")]
+    for path in image_output_paths:
         try:
             path.relative_to(workspace_path)
         except ValueError as exc:
