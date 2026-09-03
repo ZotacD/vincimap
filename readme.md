@@ -1,5 +1,7 @@
 # Vincimap
 
+Ce projet permet de transformer une simple vidéo en scène 3D mesurable. En filmant un lieu avec une caméra ou un smartphone, le système reconstruit automatiquement l’espace en trois dimensions, à l’échelle du réel. On peut ensuite se déplacer dans cette scène virtuelle, l’observer sous différents angles et prendre des mesures, comme des distances, des hauteurs ou des volumes. L’objectif est de rendre la création de jumeaux numériques 3D plus simple, rapide et accessible, sans matériel complexe et à moindre coût.
+
 ## Prérequis dev
 
 Avant de lancer le projet, installer les dépendances suivantes :
