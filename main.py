@@ -1,32 +1,23 @@
-# TODO: Script complet qui prend une vidéo et qui la transforme en modèle 3D ply.
-#
-# Les étapes suivantes doivent être respectées (en suivant le google doc "Colmap") :
-#
-# - Vérifier si cuda installé + version demandée
-# - Intégrer colmap dans la codebase ou vérifier si colmap installé + version demandée ?
-# - Vérifier ffmpeg installé
-#
-# - Détecter frame_rate de la vidéo
-#
-# - Transformer la vidéo en images via Min(frame_rate, 12fps)
-# - Stocker dans le dossier "images"
-#
-# - Redimensionner les images de "images" par un facteur 4
-# - Stocker dans le dossier "images_4" (utile pour le training du modèle splatté avec --data_factor 4)
-#
-# - Appeler colmap et éxécuter automatic_reconstruction via option sparse (ATTENTION, résultat non déterministe. On peut fixer un seed si on veut un résultat déterministe)
-#
-# - Appeler colmap et éxécuter model_converter pour convertir sparse sous format txt (utile pour le training du modèle splatté)
-# - Appeler colmap et éxécuter model_converter pour convertir sparse sous format ply (visualisation nuage de points)
-#
-# - Lancer simple_trainer avec les options adéquats (des options peuvent être spécifiées par l'utilisateur)
-#
-# Une fois cela fais, voir pour l'intégration des données Lidar
-#
-# Idée : L'utilisateur choisis des faces (ou itération sur toutes les faces d'un axe),
-# un modèle compare la face avec la vrai photo, récupère l'ID de la photo et récupère les points Lidar associés
-#
-# Ensuite, correction des gaussiennes affichées sur le même plan avec les points Lidar associés
+"""
+VinciMap main processing pipeline.
+
+This module orchestrates the video-to-3D reconstruction workflow.
+
+Main processing steps:
+1. Extract video frames with FFmpeg.
+2. Optionally generate scaled images for training.
+3. Reconstruct a sparse 3D model with COLMAP.
+4. Merge COLMAP sparse sub-models when necessary.
+5. Convert the reconstructed model to TXT and PLY formats.
+6. Train a 3D Gaussian Splatting model from the reconstructed scene.
+
+The current public pipeline focuses on the visual reconstruction workflow,
+from video acquisition to 3D Gaussian Splatting.
+
+Distance-sensor and LiDAR data are part of the VinciMap project and are
+intended to support metric calibration and measurement refinement, but
+their final integration is not yet fully implemented in this public pipeline.
+"""
 
 import argparse
 import math
