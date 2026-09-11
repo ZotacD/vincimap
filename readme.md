@@ -139,25 +139,6 @@ After the final calibration and reconstruction improvements, the system
 achieved an overall measurement accuracy of approximately **±1.5 mm**
 under the tested conditions.
 
-## Current Status
-
-### Available in the public repository
-
-- Video frame extraction
-- COLMAP sparse reconstruction
-- Sparse sub-model merging
-- COLMAP model conversion
-- PLY point-cloud generation
-- 3D Gaussian Splatting training
-- 3D visualization
-
-### Final prototype developments not yet fully reflected in this branch
-
-- Distance-sensor integration
-- Metric scale calibration
-- LiDAR-assisted measurement refinement
-- Final measurement-validation workflow
-
 ## Engineering Challenges
 
 Several technical challenges were encountered during development:
@@ -221,33 +202,31 @@ Before running VinciMap, install:
 - [CUDA 12.4.0](https://developer.nvidia.com/cuda-12-4-0-download-archive)
 - [COLMAP 3.13.0 (version CUDA)](https://github.com/colmap/colmap/releases/tag/3.13.0)
 - [FFmpeg](https://ffmpeg.org/download.html)
-- Microsoft Visual C++ Build Tools.["Microsoft C++ Build Tools"](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+- [Microsoft C++ Build Tools].["Microsoft C++ Build Tools"](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 ## Installation
 
-Créer un environnement virtuel Python 3.10 :
+Create a Python 3.10 virtual environment:
 
 ```bash
-python -3.10 -m venv venv
+py -3.10 -m venv venv
 ```
 
-### Activer l’environnement virtuel :
+### Activate the virtual environment:
 
 ```bash
-venv/scripts/activate
+venv\Scripts\activate
 ```
 
 ### Installer les dépendances :
-
-*Attention, l'éxécution doit se faire __dans l'odre__, supprimer le dossier venv si vous rencontrez une erreur et recommencer lé début de l'installation*
-
-PyTorch doit être préinstallé pour installer les dépendances complémentaires :
+> **Important:** Follow the installation steps in the order shown below. If the environment becomes corrupted or an installation step fails, delete the `venv` folder and restart the installation process.
+PyTorch must be installed before the remaining dependencies:
 
 ```bash
 python -m pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
 ```
 
-Dépendances complémentaires :
+Additional dependencies:
 
 ```bash
 python -m pip install ninja numpy jaxtyping rich
@@ -265,7 +244,7 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install --no-build-isolation -r requirements.txt
 ```
 
-### Lancer l’application :
+### Run the application:
 
 ```bash
 python main.py
