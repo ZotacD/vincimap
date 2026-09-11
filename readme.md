@@ -1,6 +1,168 @@
-# Vincimap
+# VinciMap
 
-Ce projet permet de transformer une simple vidéo en scène 3D mesurable. En filmant un lieu avec une caméra ou un smartphone, le système reconstruit automatiquement l’espace en trois dimensions, à l’échelle du réel. On peut ensuite se déplacer dans cette scène virtuelle, l’observer sous différents angles et prendre des mesures, comme des distances, des hauteurs ou des volumes. L’objectif est de rendre la création de jumeaux numériques 3D plus simple, rapide et accessible, sans matériel complexe et à moindre coût.
+**Metric 3D mapping using LiDAR, photogrammetry and 3D Gaussian Splatting**
+
+VinciMap is a five-student engineering project developed to explore a fast,
+flexible and accessible approach to metric 3D mapping.
+
+ Best Project Execution Award – ESILV Nantes P2IP  
+ 
+## Project Overview
+
+VinciMap combines several acquisition and reconstruction technologies to create
+measurable 3D representations of real environments.
+
+The system explores the combination of:
+
+- LiDAR / Time-of-Flight sensing
+- Photogrammetry
+- 3D Gaussian Splatting
+- Embedded data acquisition
+- Metric calibration
+- 3D reconstruction and visualization
+
+The objective was not only to generate visually realistic 3D scenes, but also
+to preserve sufficient metric consistency to perform measurements inside the
+reconstructed environment.
+
+Sensors / Camera
+       ↓
+Data Acquisition
+       ↓
+Raspberry Pi 5
+       ↓
+Images + Distance Data
+       ↓
+    COLMAP
+       ↓
+Camera poses / sparse reconstruction
+       ↓
+3D Gaussian Splatting
+       ↓
+Metric calibration
+       ↓
+Measurable 3D environment
+
+## System Architecture
+
+The project was designed as a complete acquisition-to-reconstruction pipeline,
+combining hardware integration, data acquisition, photogrammetry and 3D
+reconstruction.
+
+# Hardware
+
+- Raspberry Pi 5
+- LiDAR 
+- Camera / smartphone imaging system
+- Custom mechanical sensor mounts
+- Power and communication interfaces
+
+## Mechanical Integration
+
+Custom mechanical supports were designed to integrate the computing unit,
+sensors and imaging system while taking into account payload, sensor
+orientation, accessibility and mechanical constraints.
+
+## Data Acquisition
+
+The acquisition system collects visual information together with distance
+measurements from the onboard sensors.
+
+Particular attention was paid to:
+
+- sensor positioning
+- acquisition consistency
+- field of view
+- calibration
+- data organization
+
+## Photogrammetry
+
+COLMAP is used to estimate camera poses and reconstruct the geometry required
+by the 3D reconstruction pipeline.
+
+Video → Frames → Feature extraction → Feature matching
+→ Camera pose estimation → Sparse reconstruction
+
+## 3D Gaussian Splatting
+
+3D Gaussian Splatting is used to generate a detailed and photorealistic
+representation of the captured environment.
+
+The reconstruction is then combined with metric information in order to move
+beyond visualization and enable measurements within the scene.
+
+## Metric Calibration
+
+Standard photogrammetric and Gaussian Splatting reconstructions do not
+inherently provide a reliable real-world scale.
+
+VinciMap therefore uses external distance information to establish and refine
+the metric scale of the reconstructed scene.
+
+## Results
+
+After the final calibration and reconstruction improvements, the system
+achieved an overall measurement accuracy of approximately **±1.5 mm**
+under the tested conditions.
+
+## Engineering Challenges
+
+Several technical challenges were encountered during development:
+
+- maintaining metric consistency in the 3D reconstruction
+- integrating multiple sensors on a constrained platform
+- reducing payload and mechanical interference
+- selecting appropriate sensor orientations
+- managing heterogeneous acquisition data
+- improving reconstruction quality
+- validating measurements against physical references
+
+## Software & Technologies
+
+- Python
+- COLMAP
+- CUDA
+- gsplat / 3D Gaussian Splatting
+- Raspberry Pi
+- Git / GitHub
+
+## Usage
+
+### 1. Prepare the input data
+...
+
+### 2. Run COLMAP
+...
+
+### 3. Train the 3D Gaussian Splatting model
+...
+
+### 4. Apply metric calibration
+...
+
+### 5. Visualize and measure
+...
+
+## Current Limitations
+
+- reconstruction quality depends on acquisition conditions
+- reflective or textureless surfaces may reduce reconstruction quality
+- measurement accuracy depends on calibration quality
+- computationally intensive reconstruction stages are performed off-board
+
+## Future Work
+
+Potential developments include:
+
+- improved sensor synchronization
+- automated metric calibration
+- real-time or near-real-time reconstruction
+- improved LiDAR / image fusion
+- autonomous acquisition planning
+- larger-scale mapping
+- improved measurement tools
+
 
 ## Prérequis dev
 
