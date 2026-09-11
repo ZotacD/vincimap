@@ -1,38 +1,61 @@
 import subprocess
 from pathlib import Path
 
-"""
-Vérifie si COLMAP est installé
-et accessible depuis le système.
-"""
-def colmap_installed(colmap_path: str = "colmap") -> bool:
+
+def colmap_installed(
+    colmap_path: str = "colmap",
+) -> bool:
+    """Check whether COLMAP is installed and accessible from the system."""
+
     try:
         subprocess.run(
-            [colmap_path, "-h"],
+            [
+                colmap_path,
+                "-h",
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True,
         )
+
         return True
-    except (FileNotFoundError, subprocess.CalledProcessError):
+
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+    ):
         return False
 
 
-"""
-Reconstruit automatiquement une scène 3D
-dans l'espace de travail accessible via ``workspace_path``
-à partir des images accessibles via ``images_path``.
+def automatic_reconstructor(
+    workspace_path: str,
+    images_path: str,
+    colmap_path: str = "colmap",
+) -> None:
+    """Automatically reconstruct a 3D scene from images.
 
-Crée le dossier ``workspace_path`` s'il n'existe pas.
-"""
-def automatic_reconstructor(workspace_path: str, images_path: str, colmap_path: str = "colmap") -> None:
-    output_dir = Path(workspace_path)
-    input_dir = Path(images_path)
+    The reconstruction is written to ``workspace_path`` from the images stored
+    in ``images_path``. The workspace directory is created if necessary.
+    """
+
+    output_dir = Path(
+        workspace_path
+    )
+
+    input_dir = Path(
+        images_path
+    )
 
     if not input_dir.is_dir():
-        raise FileNotFoundError(f"Images folder not found : {input_dir}")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+        raise FileNotFoundError(
+            f"Images folder not found: {input_dir}"
+        )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     try:
         subprocess.run(
@@ -51,29 +74,51 @@ def automatic_reconstructor(workspace_path: str, images_path: str, colmap_path: 
             check=True,
             text=True,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+    ) as e:
+
         print(
-            "COLMAP error during automatic reconstruction :\n"
+            "COLMAP error during automatic reconstruction:\n"
             f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
         )
+
         raise
 
 
-"""
-Transforme le modèle accessible via ``input_path``
-en un modèle accessible via ``output_path``
-au format ``output_type``.
+def model_converter(
+    input_path: str,
+    output_path: str,
+    output_type: str,
+    colmap_path: str = "colmap",
+) -> None:
+    """Convert a COLMAP model to another output format.
 
-Crée le dossier parent de ``output_path`` s'il n'existe pas.
-"""
-def model_converter(input_path: str, output_path: str, output_type: str, colmap_path: str = "colmap") -> None:
-    input_dir = Path(input_path)
-    output_file = Path(output_path)
+    ``input_path`` points to the source model,
+    ``output_path`` to the converted model,
+    and ``output_type`` defines the target format.
+    """
+
+    input_dir = Path(
+        input_path
+    )
+
+    output_file = Path(
+        output_path
+    )
 
     if not input_dir.exists():
-        raise FileNotFoundError(f"Model not found : {input_dir}")
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+        raise FileNotFoundError(
+            f"Model not found: {input_dir}"
+        )
+
+    output_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     try:
         subprocess.run(
@@ -90,32 +135,59 @@ def model_converter(input_path: str, output_path: str, output_type: str, colmap_
             check=True,
             text=True,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+    ) as e:
+
         print(
-            "COLMAP error during model conversion :\n"
+            "COLMAP error during model conversion:\n"
             f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
         )
-        raise
-    
-"""
-Fusionne les modèles accessibles via ``input_path1``
-et ``input_path2``
-en un modèle accessible via ``output_path``.
 
-Crée le dossier ``output_path`` s'il n'existe pas.
-"""
-def model_merger(input_path1: str, input_path2: str, output_path: str, colmap_path: str = "colmap") -> None:
-    input_dir1 = Path(input_path1)
-    input_dir2 = Path(input_path2)
-    output_dir = Path(output_path)
+        raise
+
+
+def model_merger(
+    input_path1: str,
+    input_path2: str,
+    output_path: str,
+    colmap_path: str = "colmap",
+) -> None:
+    """Merge two COLMAP models into a single output model.
+
+    The output directory is created automatically if it does not exist.
+    """
+
+    input_dir1 = Path(
+        input_path1
+    )
+
+    input_dir2 = Path(
+        input_path2
+    )
+
+    output_dir = Path(
+        output_path
+    )
 
     if not input_dir1.exists():
-        raise FileNotFoundError(f"Model not found : {input_dir1}")
+
+        raise FileNotFoundError(
+            f"Model not found: {input_dir1}"
+        )
 
     if not input_dir2.exists():
-        raise FileNotFoundError(f"Model not found : {input_dir2}")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+        raise FileNotFoundError(
+            f"Model not found: {input_dir2}"
+        )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     try:
         subprocess.run(
@@ -132,9 +204,15 @@ def model_merger(input_path1: str, input_path2: str, output_path: str, colmap_pa
             check=True,
             text=True,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+    ) as e:
+
         print(
-            "COLMAP error during model merge :\n"
+            "COLMAP error during model merge:\n"
             f"{e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else e}"
         )
+
         raise
