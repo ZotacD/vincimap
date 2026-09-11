@@ -23,6 +23,25 @@ The objective was not only to generate visually realistic 3D scenes, but also
 to preserve sufficient metric consistency to perform measurements inside the
 reconstructed environment.
 
+## Current Status
+
+### Available in the public repository
+
+- Video frame extraction
+- COLMAP sparse reconstruction
+- Sparse sub-model merging
+- COLMAP model conversion
+- PLY point-cloud generation
+- 3D Gaussian Splatting training
+- 3D visualization
+
+### Final prototype developments not yet fully reflected in this branch
+
+- Distance-sensor integration
+- Metric scale calibration
+- LiDAR-assisted measurement refinement
+- Final measurement-validation workflow
+
 ## Processing Pipeline
 
 Video acquisition
