@@ -66,7 +66,7 @@ The project was designed as a complete acquisition-to-reconstruction pipeline,
 combining hardware integration, data acquisition, photogrammetry and 3D
 reconstruction.
 
-# Hardware
+## Hardware
 
 - Raspberry Pi 5
 - LiDAR 
@@ -82,16 +82,13 @@ orientation, accessibility and mechanical constraints.
 
 ## Data Acquisition
 
-The acquisition system collects visual information together with distance
-measurements from the onboard sensors.
+The VinciMap project combines visual acquisition with external distance
+measurements used for metric calibration.
 
-Particular attention was paid to:
-
-- sensor positioning
-- acquisition consistency
-- field of view
-- calibration
-- data organization
+The current public software branch mainly contains the video-to-3D
+reconstruction pipeline. The latest distance-sensor and metric-calibration
+developments from the final prototype are not yet fully integrated into
+this branch.
 
 ## Photogrammetry
 
@@ -123,6 +120,25 @@ After the final calibration and reconstruction improvements, the system
 achieved an overall measurement accuracy of approximately **±1.5 mm**
 under the tested conditions.
 
+## Current Status
+
+### Available in the public repository
+
+- Video frame extraction
+- COLMAP sparse reconstruction
+- Sparse sub-model merging
+- COLMAP model conversion
+- PLY point-cloud generation
+- 3D Gaussian Splatting training
+- 3D visualization
+
+### Final prototype developments not yet fully reflected in this branch
+
+- Distance-sensor integration
+- Metric scale calibration
+- LiDAR-assisted measurement refinement
+- Final measurement-validation workflow
+
 ## Engineering Challenges
 
 Several technical challenges were encountered during development:
@@ -137,29 +153,27 @@ Several technical challenges were encountered during development:
 
 ## Software & Technologies
 
+### 3D Reconstruction
+- COLMAP / pycolmap
+- 3D Gaussian Splatting
+- gsplat
+
+### Computer Vision & Data Processing
 - Python
-- COLMAP
+- OpenCV
+- NumPy
+- FFmpeg
+
+### GPU Computing
+- PyTorch
 - CUDA
-- gsplat / 3D Gaussian Splatting
-- Raspberry Pi
-- Git / GitHub
 
-## Usage
+### Visualization
+- nerfview
+- PLY point clouds
 
-### 1. Prepare the input data
-...
-
-### 2. Run COLMAP
-...
-
-### 3. Train the 3D Gaussian Splatting model
-...
-
-### 4. Apply metric calibration
-...
-
-### 5. Visualize and measure
-...
+### Embedded System
+- Raspberry Pi 5
 
 ## Current Limitations
 
@@ -180,16 +194,15 @@ Potential developments include:
 - larger-scale mapping
 - improved measurement tools
 
+## Development Requirements
 
-## Prérequis dev
-
-Avant de lancer le projet, installer les dépendances suivantes :
+Before running VinciMap, install:
 
 - [Python 3.10.11](https://www.python.org/downloads/release/python-31011/)
 - [CUDA 12.4.0](https://developer.nvidia.com/cuda-12-4-0-download-archive)
 - [COLMAP 3.13.0 (version CUDA)](https://github.com/colmap/colmap/releases/tag/3.13.0)
 - [FFmpeg](https://ffmpeg.org/download.html)
-- Dernière version de C++. Voir ["Microsoft C++ Build Tools"](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+- Microsoft Visual C++ Build Tools.["Microsoft C++ Build Tools"](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 ## Installation
 
