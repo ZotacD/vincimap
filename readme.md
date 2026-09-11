@@ -1,47 +1,64 @@
 # VinciMap
 
-**Metric 3D mapping using LiDAR, photogrammetry and 3D Gaussian Splatting**
+**Metric 3D reconstruction from video using photogrammetry and 3D Gaussian Splatting**
 
-VinciMap is a five-student engineering project developed to explore a fast,
-flexible and accessible approach to metric 3D mapping.
+VinciMap is a five-student engineering project developed at ESILV Nantes as part of the P2IP program.
+
+The project explores a low-cost approach to creating measurable 3D environments from conventional video acquisition. The current software pipeline converts video frames into a COLMAP reconstruction and trains a 3D Gaussian Splatting model for visualization and further metric processing.
 
  Best Project Execution Award – ESILV Nantes P2IP  
+ five-student engineering team   
  
-## Project Overview
+## Project Objectives
 
-VinciMap combines several acquisition and reconstruction technologies to create
-measurable 3D representations of real environments.
+The main objectives of VinciMap were to:
 
-The system explores the combination of:
-
-- LiDAR / Time-of-Flight sensing
-- Photogrammetry
-- 3D Gaussian Splatting
-- Embedded data acquisition
-- Metric calibration
-- 3D reconstruction and visualization
+- reconstruct a real environment from conventional video acquisition;
+- generate a detailed 3D representation using photogrammetry and 3D Gaussian Splatting;
+- recover a real-world metric scale;
+- investigate the integration of distance-sensor data to improve metric consistency;
+- provide a simple and accessible alternative to more expensive 3D mapping solutions.
 
 The objective was not only to generate visually realistic 3D scenes, but also
 to preserve sufficient metric consistency to perform measurements inside the
 reconstructed environment.
 
-Sensors / Camera
-       ↓
-Data Acquisition
-       ↓
-Raspberry Pi 5
-       ↓
-Images + Distance Data
-       ↓
-    COLMAP
-       ↓
-Camera poses / sparse reconstruction
-       ↓
-3D Gaussian Splatting
-       ↓
-Metric calibration
-       ↓
-Measurable 3D environment
+## Processing Pipeline
+
+Video acquisition
+        ↓
+Frame extraction with FFmpeg
+        ↓
+COLMAP sparse reconstruction
+        ↓
+Sparse sub-model merging
+        ↓
+COLMAP model conversion
+        ↓
+Point-cloud export
+        ↓
+3D Gaussian Splatting training
+        ↓
+3D visualization
+        ↓
+Metric scaling / measurement
+
+The pipeline is partially automated through `main.py`.
+
+Main processing stages currently include:
+
+1. Video frame extraction
+2. COLMAP sparse reconstruction
+3. Sparse model merging
+4. COLMAP TXT model generation
+5. PLY point-cloud generation
+6. Gaussian Splatting training
+
+> **Project result:** The final prototype reached approximately ±1.5 mm overall
+> measurement accuracy under the tested conditions.
+>
+> The latest metric-calibration developments are not yet fully reflected in the
+> current public branch.
 
 ## System Architecture
 
@@ -201,11 +218,11 @@ python -m pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index
 Dépendances complémentaires :
 
 ```bash
-python -m install ninja numpy jaxtyping rich
+python -m pip install ninja numpy jaxtyping rich
 ```
 
 ```bash
-python -m install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
+python -m pip install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
 ```
 
 ```bash
