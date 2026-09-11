@@ -202,7 +202,7 @@ Before running VinciMap, install:
 - [CUDA 12.4.0](https://developer.nvidia.com/cuda-12-4-0-download-archive)
 - [COLMAP 3.13.0 (version CUDA)](https://github.com/colmap/colmap/releases/tag/3.13.0)
 - [FFmpeg](https://ffmpeg.org/download.html)
-- [Microsoft C++ Build Tools].["Microsoft C++ Build Tools"](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+- [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 
 ## Installation
 
@@ -218,7 +218,7 @@ py -3.10 -m venv venv
 venv\Scripts\activate
 ```
 
-### Installer les dépendances :
+### Install the dependencies:
 > **Important:** Follow the installation steps in the order shown below. If the environment becomes corrupted or an installation step fails, delete the `venv` folder and restart the installation process.
 PyTorch must be installed before the remaining dependencies:
 
